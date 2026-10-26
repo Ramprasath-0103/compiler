@@ -8,7 +8,7 @@ _REAL_GEMINI = models._gemini
 
 
 def test_gemini_is_preferred_then_the_local_api(monkeypatch) -> None:
-    ge = models.Provider("gemini", "gemini-flash-latest")
+    ge = models.Provider("gemini", "gemini-flash-lite-latest")
     api = models.Provider("openai-compatible", "local-api-model")
     an = models.Provider("anthropic", "claude-opus-5-5")
     ol = models.Provider("ollama", "local-b")
@@ -62,23 +62,25 @@ def test_gemini_request_and_reply(monkeypatch) -> None:
 
     def post_json(url, payload, timeout=models.REQUEST_TIMEOUT, headers=None):
         observed.update(url=url, payload=payload, headers=headers)
-        return {"candidates": [{"content": {"parts": [
-            {"text": "thinking", "thought": True},
-            {"text": '{"a": '}, {"text": "1}"}]}}]}
+        return {"status": "completed", "steps": [
+            {"type": "thought", "signature": "abc"},
+            {"type": "model_output", "content": [
+                {"type": "text", "text": '{"a": '},
+                {"type": "text", "text": "1}"}]}]}
 
     monkeypatch.setattr(models, "_post_json", post_json)
     provider = models.Provider("gemini", "gemini-test")
-    text = models._chat(provider, "system", "prompt", 100, json_mode=True)
+    text = models._chat(provider, "system", "prompt", 100)
 
     assert text == '{"a": 1}'
-    assert observed["url"] == (
-        f"{models.GEMINI_URL}/models/gemini-test:generateContent")
+    assert observed["url"] == f"{models.GEMINI_URL}/interactions"
     assert observed["headers"] == {"x-goog-api-key": "test-key-not-used"}
     payload = observed["payload"]
-    assert payload["systemInstruction"] == {"parts": [{"text": "system"}]}
-    assert payload["contents"] == [{"role": "user", "parts": [{"text": "prompt"}]}]
-    assert payload["generationConfig"]["responseMimeType"] == "application/json"
-    assert payload["generationConfig"]["maxOutputTokens"] > 100
+    assert payload["model"] == "gemini-test"
+    assert payload["system_instruction"] == "system"
+    assert payload["input"] == "prompt"
+    assert payload["store"] is False
+    assert payload["generation_config"]["max_output_tokens"] > 100
 
 
 def test_a_gemini_error_is_reported_and_not_retried(monkeypatch) -> None:
@@ -91,7 +93,7 @@ def test_a_gemini_error_is_reported_and_not_retried(monkeypatch) -> None:
 
     def post_json(url, payload, timeout=models.REQUEST_TIMEOUT, headers=None):
         calls.append(url)
-        return {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+        return {"error": {"code": "invalid_request",
                           "message": "API key not valid."}}
 
     monkeypatch.setattr(models, "_post_json", post_json)

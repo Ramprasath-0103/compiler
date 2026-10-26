@@ -58,11 +58,13 @@ OLLAMA_URL = os.environ.get("NLPCC_OLLAMA_URL", "http://127.0.0.1:11434")
 ANTHROPIC_MODEL = "claude-opus-5-5"
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
-# An alias Google moves to its current Flash model, so a retired model ID
-# never breaks the project. Pin a specific one with NLPCC_GEMINI_MODEL.
-GEMINI_MODEL = os.environ.get("NLPCC_GEMINI_MODEL", "gemini-flash-latest")
+# An alias Google moves to its current Flash-Lite model, so a retired model ID
+# never breaks the project. Flash-Lite rather than Flash: the free tier gives
+# Flash 20 requests a day, which one session of analyses can spend. Pin a
+# specific model with NLPCC_GEMINI_MODEL.
+GEMINI_MODEL = os.environ.get("NLPCC_GEMINI_MODEL", "gemini-flash-lite-latest")
 # Gemini thinks before it answers and charges the thinking to
-# maxOutputTokens, so a budget sized for the answer alone can be spent
+# max_output_tokens, so a budget sized for the answer alone can be spent
 # entirely on thinking and come back with no text.
 GEMINI_THINKING_HEADROOM = 8192
 
@@ -342,42 +344,41 @@ def _local_chat(provider: Provider, system: str, prompt: str,
 
 
 def _gemini_chat(provider: Provider, system: str, prompt: str,
-                 max_tokens: int = 4096, json_mode: bool = False) -> str:
-    """One generateContent round trip to the Gemini API.
+                 max_tokens: int = 4096) -> str:
+    """One round trip to the Gemini Interactions API.
 
-    Temperature is left at Google's default: current Gemini models are tuned
-    for it, and lowering it is documented to cause looping replies.
+    Not generateContent: Google now steers new users to Interactions, and a
+    new key gets a bare 404 from generateContent whatever the model.
+    ``store`` is off so the code sent here is not kept on Google's side.
     """
-    config: dict = {"maxOutputTokens": max_tokens + GEMINI_THINKING_HEADROOM}
-    if json_mode:
-        config["responseMimeType"] = "application/json"
-    data = _post_json(f"{GEMINI_URL}/models/{provider.model}:generateContent", {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": config,
+    data = _post_json(f"{GEMINI_URL}/interactions", {
+        "model": provider.model,
+        "input": prompt,
+        "system_instruction": system,
+        "generation_config": {
+            "max_output_tokens": max_tokens + GEMINI_THINKING_HEADROOM,
+            "thinking_level": "low"},
+        "store": False,
     }, headers={"x-goog-api-key": _gemini_key()})
     data = data or {}
 
-    error = data.get("error")
-    if error:
-        message = str(error.get("message") or error.get("status") or error)
+    # A refused request carries "error"; a created interaction that then
+    # failed carries "errors".
+    errors = data.get("errors") or [data.get("error")]
+    if errors[0]:
+        message = str(errors[0].get("message") or errors[0].get("code") or errors[0])
         raise ModelError(f"the Gemini API refused the request: {message[:200]}")
-    blocked = (data.get("promptFeedback") or {}).get("blockReason")
-    if blocked:
-        raise ModelError(f"Gemini blocked the prompt ({blocked})")
 
-    candidates = data.get("candidates") or []
-    if not candidates:
-        return ""
-    parts = (candidates[0].get("content") or {}).get("parts") or []
-    return "".join(part.get("text", "") for part in parts
-                   if not part.get("thought"))
+    return "".join(item.get("text", "")
+                   for step in data.get("steps") or []
+                   if step.get("type") == "model_output"
+                   for item in step.get("content") or []
+                   if item.get("type") == "text")
 
 
-def _chat(provider: Provider, system: str, prompt: str, max_tokens: int,
-          json_mode: bool = False) -> str:
+def _chat(provider: Provider, system: str, prompt: str, max_tokens: int) -> str:
     if provider.kind == "gemini":
-        return _gemini_chat(provider, system, prompt, max_tokens, json_mode)
+        return _gemini_chat(provider, system, prompt, max_tokens)
     return _local_chat(provider, system, prompt,
                        max_tokens=min(max_tokens, MAX_TOKENS_LOCAL))
 
@@ -447,8 +448,7 @@ def complete(system: str, prompt: str, schema: Type[T],
                  f"({REQUEST_TIMEOUT:.0f}s budget)")
             return None
         try:
-            raw = _chat(provider, instructions, prompt, max_tokens,
-                        json_mode=True)
+            raw = _chat(provider, instructions, prompt, max_tokens)
         except ModelError as exc:
             note(str(exc))
             return None
