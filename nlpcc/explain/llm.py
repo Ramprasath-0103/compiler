@@ -10,8 +10,9 @@ ordering is the whole design:
     rather than authored.
   * Every answer is cached on disk by diagnostic code, so the second run of
     the same program costs nothing and works with the network unplugged.
-  * It runs on whatever model is available, local first -- LM Studio or
-    Ollama need no API key (see nlpcc/models.py).
+  * It runs on whatever model is available -- Gemini when GEMINI_API_KEY is
+    set, otherwise a local one through LM Studio or Ollama (see
+    nlpcc/models.py).
   * Nothing here can fail the pipeline. No model, no network, a rate limit, a
     malformed reply -- each leaves the diagnostic exactly as it arrived, and
     the CLI goes on reporting it without an explanation.

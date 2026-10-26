@@ -87,35 +87,37 @@ printed when it ran. Requests to change the code ("fix the error", "add
 comments", "use a while loop") come back as a diff that has been checked to
 compile. Both need a model; without one, a question still gets the analysis.
 
-## Running without an API key
+## The model
 
 ```bash
 ./.venv/bin/python -m nlpcc models
 ```
 
 The model-backed parts — explaining unmatched diagnostics, AI code analysis,
-and code generation — use the configured OpenAI-compatible local API first.
-This can be LM Studio or another local server implementing the OpenAI chat
-completions API. The model ID is discovered from its `/models` endpoint
-unless `NLPCC_LOCAL_MODEL` pins one.
-
-Set the API's base URL and key in `.env` (the key is optional for servers that
-do not require authentication):
+and code generation — use Google Gemini when a Gemini API key is set. Get a
+key from Google AI Studio and put it in `.env` at the project root:
 
 ```dotenv
-NLPCC_PROVIDER=openai-compatible
+GEMINI_API_KEY=your-key
+NLPCC_GEMINI_MODEL=gemini-flash-latest   # optional
+```
+
+`GOOGLE_API_KEY` is accepted too. The default model, `gemini-flash-latest`,
+is Google's alias for its current Flash model; `NLPCC_GEMINI_MODEL` pins a
+specific one. The `.env` file is gitignored and read automatically at
+startup; values already exported in the shell take precedence.
+
+Without a Gemini key, the OpenAI-compatible local API is tried next — LM
+Studio or another server implementing the OpenAI chat completions API:
+
+```dotenv
 NLPCC_LOCAL_URL=https://your-local-llm/v1
-NLPCC_LOCAL_API_KEY=your-key
+NLPCC_LOCAL_API_KEY=your-key   # optional
 NLPCC_LOCAL_MODEL=your-model   # optional
 ```
 
-The URL should be the API base URL, ending in `/v1` when required by the
-server, rather than the full `/models` or `/chat/completions` URL. The
-`.env` file is gitignored and read automatically at startup; values already
-exported in the shell take precedence.
-
 Anthropic and Ollama remain available as alternate providers. Pin one with
-`NLPCC_PROVIDER=anthropic` or `NLPCC_PROVIDER=ollama`. **Everything outside
+`NLPCC_PROVIDER=gemini`, `openai-compatible`, `anthropic` or `ollama`. **Everything outside
 the three model-backed features works with no model at all** — the compiler,
 deterministic explanations, five dimensions, score and suggestions do not
 depend on an API.

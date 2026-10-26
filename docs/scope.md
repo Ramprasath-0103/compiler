@@ -165,11 +165,11 @@ in one place. No PDF — a Markdown file prints.
 
 ### The model layer and its offline path
 
-Local first (`nlpcc/models.py`): LM Studio or Ollama on localhost need no API
-key, and Anthropic is used only when credentials exist. The project therefore
-runs its AI features on the machine it is demonstrated on, with no account.
-Small local models are rougher and slower, so the provider is reported with
-every answer it produced.
+Gemini first (`nlpcc/models.py`): when `GEMINI_API_KEY` is set, Google
+Gemini answers. Without a key, LM Studio or Ollama on localhost are used and
+need no account, and Anthropic is used only when credentials exist. Small
+local models are rougher and slower, so the provider is reported with every
+answer it produced.
 
 The explanation layer sits strictly *behind* the rule table: only findings no
 rule matched are sent.

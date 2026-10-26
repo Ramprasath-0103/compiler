@@ -1,8 +1,9 @@
 """Where the model comes from.
 
-The configured OpenAI-compatible local API is tried first, followed by
-Anthropic and Ollama. The local API can be LM Studio or another server that
-implements the OpenAI chat completions API.
+Google Gemini is tried first, whenever GEMINI_API_KEY (or GOOGLE_API_KEY) is
+set. Without a key the configured OpenAI-compatible local API is next,
+followed by Anthropic and Ollama. The local API can be LM Studio or another
+server that implements the OpenAI chat completions API.
 
 The project still works with no API key at all: the local providers need no
 account, and everything outside this module (the compiler, explanations,
@@ -56,6 +57,15 @@ LOCAL_MODEL = os.environ.get("NLPCC_LOCAL_MODEL", "")
 OLLAMA_URL = os.environ.get("NLPCC_OLLAMA_URL", "http://127.0.0.1:11434")
 ANTHROPIC_MODEL = "claude-opus-5-5"
 
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
+# An alias Google moves to its current Flash model, so a retired model ID
+# never breaks the project. Pin a specific one with NLPCC_GEMINI_MODEL.
+GEMINI_MODEL = os.environ.get("NLPCC_GEMINI_MODEL", "gemini-flash-latest")
+# Gemini thinks before it answers and charges the thinking to
+# maxOutputTokens, so a budget sized for the answer alone can be spent
+# entirely on thinking and come back with no text.
+GEMINI_THINKING_HEADROOM = 8192
+
 PROBE_TIMEOUT = 1.5
 REQUEST_TIMEOUT = 90.0       # a small local model on CPU is not fast
 
@@ -70,7 +80,7 @@ T = TypeVar("T")
 
 @dataclass
 class Provider:
-    kind: str           # "openai-compatible" | "ollama" | "anthropic"
+    kind: str           # "gemini" | "openai-compatible" | "ollama" | "anthropic"
     model: str
     detail: str = ""
 
@@ -81,6 +91,19 @@ class Provider:
     def __str__(self) -> str:
         where = "local" if self.local else "hosted"
         return f"{self.model} ({self.kind}, {where})"
+
+
+class ModelError(Exception):
+    """A hosted API answered with an error instead of a reply.
+
+    Retrying will not help -- a bad key, an unknown model or a spent quota
+    is the same a second later -- so callers stop and report the message.
+    """
+
+
+def _gemini_key() -> str:
+    return (os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY", ""))
 
 
 def _local_api_headers() -> dict[str, str]:
@@ -114,6 +137,15 @@ def _post_json(url: str, payload: dict, timeout: float = REQUEST_TIMEOUT,
             return None
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return None
+
+
+def _gemini() -> Provider | None:
+    # No probe request: available() runs on every model-backed call, and a
+    # round trip to Google each time would cost more than it proves. A bad
+    # key surfaces as the API's own message on the first real request.
+    if not _gemini_key():
+        return None
+    return Provider("gemini", GEMINI_MODEL, "API key found")
 
 
 def _openai_compatible() -> Provider | None:
@@ -156,17 +188,18 @@ def _anthropic() -> Provider | None:
 def available(prefer: str = "") -> Provider | None:
     """The provider to use, or None when there is no model anywhere.
 
-    ``prefer`` pins one ("openai-compatible", "ollama", "anthropic");
-    NLPCC_PROVIDER does the same from the environment.
+    ``prefer`` pins one ("gemini", "openai-compatible", "ollama",
+    "anthropic"); NLPCC_PROVIDER does the same from the environment.
     """
     prefer = prefer or os.environ.get("NLPCC_PROVIDER", "")
-    finders = {"openai-compatible": _openai_compatible,
+    finders = {"gemini": _gemini, "google": _gemini,
+               "openai-compatible": _openai_compatible,
                "lmstudio": _openai_compatible,
                "anthropic": _anthropic, "ollama": _ollama}
     if prefer:
         finder = finders.get(prefer)
         return finder() if finder else None
-    for finder in (_openai_compatible, _anthropic, _ollama):
+    for finder in (_gemini, _openai_compatible, _anthropic, _ollama):
         found = finder()
         if found is not None:
             return found
@@ -175,16 +208,16 @@ def available(prefer: str = "") -> Provider | None:
 
 def unreachable(task: str) -> str:
     """One sentence for when ``task`` needs a model and there is none."""
-    return (f"{task} needs a model, and none is answering at {LOCAL_API_URL} "
-            "right now.")
+    return (f"{task} needs a model, and none is configured -- set "
+            "GEMINI_API_KEY in .env.")
 
 
 def describe() -> str:
     """One line for the CLI and the web UI."""
     provider = available()
     if provider is None:
-        return ("no model available -- configure an OpenAI-compatible local "
-                "API with NLPCC_LOCAL_URL, or start Ollama")
+        return ("no model available -- set GEMINI_API_KEY in .env, or "
+                "configure a local API with NLPCC_LOCAL_URL")
     return str(provider)
 
 
@@ -220,8 +253,12 @@ def complete_text(system: str, prompt: str, provider: Provider | None = None,
                 reasons.append(f"the API call failed ({exc.__class__.__name__})")
             return ""
 
-    text = _local_chat(provider, system, prompt,
-                       max_tokens=min(max_tokens, MAX_TOKENS_LOCAL))
+    try:
+        text = _chat(provider, system, prompt, max_tokens)
+    except ModelError as exc:
+        if reasons is not None:
+            reasons.append(str(exc))
+        return ""
     if not text and reasons is not None and not reasons:
         reasons.append("the model returned nothing")
     return text
@@ -304,6 +341,47 @@ def _local_chat(provider: Provider, system: str, prompt: str,
     return (choices[0].get("message") or {}).get("content", "")
 
 
+def _gemini_chat(provider: Provider, system: str, prompt: str,
+                 max_tokens: int = 4096, json_mode: bool = False) -> str:
+    """One generateContent round trip to the Gemini API.
+
+    Temperature is left at Google's default: current Gemini models are tuned
+    for it, and lowering it is documented to cause looping replies.
+    """
+    config: dict = {"maxOutputTokens": max_tokens + GEMINI_THINKING_HEADROOM}
+    if json_mode:
+        config["responseMimeType"] = "application/json"
+    data = _post_json(f"{GEMINI_URL}/models/{provider.model}:generateContent", {
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": config,
+    }, headers={"x-goog-api-key": _gemini_key()})
+    data = data or {}
+
+    error = data.get("error")
+    if error:
+        message = str(error.get("message") or error.get("status") or error)
+        raise ModelError(f"the Gemini API refused the request: {message[:200]}")
+    blocked = (data.get("promptFeedback") or {}).get("blockReason")
+    if blocked:
+        raise ModelError(f"Gemini blocked the prompt ({blocked})")
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return ""
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    return "".join(part.get("text", "") for part in parts
+                   if not part.get("thought"))
+
+
+def _chat(provider: Provider, system: str, prompt: str, max_tokens: int,
+          json_mode: bool = False) -> str:
+    if provider.kind == "gemini":
+        return _gemini_chat(provider, system, prompt, max_tokens, json_mode)
+    return _local_chat(provider, system, prompt,
+                       max_tokens=min(max_tokens, MAX_TOKENS_LOCAL))
+
+
 # Small local models produce a malformed reply often enough that one attempt
 # is not a fair test of them -- usually a bad escape inside a string, which
 # json.loads rejects. Anthropic uses its structured-output API instead.
@@ -361,7 +439,6 @@ def complete(system: str, prompt: str, schema: Type[T],
         "Escape every newline and quote inside a JSON string correctly.\n"
         f"It must match this JSON schema:\n{shape}"
     )
-    budget = min(max_tokens, MAX_TOKENS_LOCAL)
     deadline = time.monotonic() + REQUEST_TIMEOUT
 
     for attempt in range(LOCAL_ATTEMPTS):
@@ -369,7 +446,12 @@ def complete(system: str, prompt: str, schema: Type[T],
             note(f"ran out of time after {attempt} attempt(s) "
                  f"({REQUEST_TIMEOUT:.0f}s budget)")
             return None
-        raw = _local_chat(provider, instructions, prompt, max_tokens=budget)
+        try:
+            raw = _chat(provider, instructions, prompt, max_tokens,
+                        json_mode=True)
+        except ModelError as exc:
+            note(str(exc))
+            return None
         if not raw:
             note("the model server returned nothing")
             continue

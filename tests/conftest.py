@@ -13,7 +13,7 @@ CORPUS = Path(__file__).parent / "corpus"
 @pytest.fixture(autouse=True)
 def no_live_model(monkeypatch):
 
-    for probe in ("_openai_compatible", "_anthropic", "_ollama"):
+    for probe in ("_gemini", "_openai_compatible", "_anthropic", "_ollama"):
         monkeypatch.setattr(models, probe, lambda: None)
     monkeypatch.setenv("NLPCC_PROVIDER", "")
     monkeypatch.setenv("NLPCC_LOCAL_MODEL", "")

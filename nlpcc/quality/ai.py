@@ -5,8 +5,9 @@ rule engine uses. It runs alongside the rules, not instead of them: the rules
 catch what they know and always work offline, and this catches what no fixed
 threshold can describe.
 
-Runs on whatever model is available -- a local one through LM Studio or
-Ollama needs no API key at all (see nlpcc/models.py). Optional either way: no
+Runs on whatever model is available -- Gemini when GEMINI_API_KEY is set,
+otherwise a local one through LM Studio or Ollama (see nlpcc/models.py).
+Optional either way: no
 model, or a reply that does not parse, leaves the analysis exactly as the
 rules produced it. Each finding records which provider wrote it.
 """

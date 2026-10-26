@@ -82,9 +82,8 @@ fi
 case "$MODEL" in
     *"no model available"*)
         warn "  No model: AI explanations, AI analysis and code generation are off."
-        warn "  Everything else works. Configure your local API in .env:"
-        warn "      NLPCC_LOCAL_URL=https://your-local-llm/v1"
-        warn "      NLPCC_LOCAL_API_KEY=your-key"
+        warn "  Everything else works. Put your Gemini API key in .env:"
+        warn "      GEMINI_API_KEY=your-key"
         ;;
     *) echo "  model: $MODEL" ;;
 esac
