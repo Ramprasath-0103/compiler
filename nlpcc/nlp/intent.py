@@ -24,8 +24,13 @@ SCORE = "score"
 OPTIMIZE = "optimize"
 RUN = "run"
 ANALYZE = "analyze"
+QUESTION = "question"
+EDIT = "edit"
 
-ACTIONS = (EXPLAIN, GENERATE, SCORE, OPTIMIZE, RUN, ANALYZE)
+ACTIONS = (EXPLAIN, GENERATE, SCORE, OPTIMIZE, RUN, ANALYZE, QUESTION, EDIT)
+
+# Actions that need code in the editor to act on.
+NEEDS_CODE = (EXPLAIN, SCORE, OPTIMIZE, RUN, ANALYZE, EDIT)
 
 # What each action does, for the UI to show next to its guess.
 DESCRIPTIONS = {
@@ -35,6 +40,8 @@ DESCRIPTIONS = {
     OPTIMIZE: "suggest improvements",
     RUN: "compile and run it",
     ANALYZE: "compile it and report everything",
+    QUESTION: "answer your question",
+    EDIT: "change your code as asked",
 }
 
 # Phrases are worth more than single words because they are less ambiguous:
@@ -71,6 +78,32 @@ PHRASES: dict[str, tuple[tuple[str, int], ...]] = {
     RUN: (
         ("what does it print", 6), ("run it", 5), ("run this", 5),
         ("execute it", 5), ("what is the output", 6), ("does it crash", 5),
+        ("what's the output", 6), ("what will it print", 6),
+        ("what does this print", 6), ("what will this print", 6),
+    ),
+    # Questions used to have nowhere to go: "what does this code do" scored
+    # one point for GENERATE on the word "code" and wrote a new program.
+    QUESTION: (
+        ("what does this code do", 8), ("what does this program do", 8),
+        ("what does this do", 8), ("what does it do", 7), ("what does the code do", 8),
+        ("explain this code", 7), ("explain the code", 7), ("explain my code", 7),
+        ("explain this program", 7), ("explain what", 5), ("walk me through", 6),
+        ("tell me about", 6), ("how does", 4), ("how do", 4), ("what is a", 4),
+        ("what is an", 4), ("what are", 3), ("what does", 2), ("difference between", 6),
+        ("is this correct", 6), ("is it correct", 6), ("is my code correct", 6),
+        ("does this work", 6), ("does it work", 6), ("will this work", 6),
+        ("why do we", 5), ("why use", 4), ("when should", 4), ("what happens if", 6),
+    ),
+    # Changing the code in the editor, as opposed to writing a new program.
+    EDIT: (
+        ("fix it", 7), ("fix this", 7), ("fix my code", 7), ("fix the code", 7),
+        ("fix the error", 7), ("fix the errors", 7), ("fix the bug", 7),
+        ("fix these", 7), ("correct my code", 7), ("correct the code", 7),
+        ("correct it", 6), ("correct this", 6), ("change it to", 6),
+        ("change this to", 6), ("add comments", 7), ("add a comment", 6),
+        ("make it shorter", 6), ("make the code shorter", 7), ("turn it into", 6),
+        ("turn this into", 6), ("use a while loop", 6), ("use a for loop", 6),
+        ("instead of", 3),
     ),
 }
 
@@ -89,7 +122,14 @@ KEYWORDS: dict[str, tuple[tuple[str, int], ...]] = {
     RUN: (("run", 3), ("execut", 3), ("output", 2), ("print", 2), ("crash", 2)),
     ANALYZE: (("analyz", 3), ("analys", 3), ("check", 2), ("review", 2),
               ("compil", 2), ("everyth", 1), ("report", 2)),
+    EDIT: (("fix", 4), ("fixe", 4), ("fixing", 4), ("correct", 3), ("convert", 4),
+           ("rewrit", 4), ("renam", 4), ("replac", 3), ("chang", 3), ("shorter", 3),
+           ("simplif", 3), ("comment", 3), ("remov", 3), ("translat", 3)),
 }
+
+# Questions are recognised by their shape as much as their words.
+_QUESTION_START = ("what", "what's", "how", "why", "is", "are", "does", "do", "can",
+                   "could", "should", "when", "where", "which", "who", "will")
 
 # Words that name an optimization objective.
 OBJECTIVE_WORDS: dict[str, tuple[str, ...]] = {
@@ -206,15 +246,26 @@ def detect(text: str, has_code: bool = True) -> Intent:
                 scores[action] += weight
                 because.append(keyword)
 
+    if normalised.endswith("?") or (tokens and tokens[0] in _QUESTION_START):
+        scores[QUESTION] += 2
+        because.append("asked as a question")
+
     objectives = _objectives(tokens)
     if objectives:
         scores[OPTIMIZE] += 2 * len(objectives)
         because.extend(objectives)
 
-    if not has_code:
-        # Nothing to explain, score or run when the editor is empty.
-        scores[GENERATE] += 4
-        for action in (EXPLAIN, SCORE, OPTIMIZE, RUN, ANALYZE):
+    wanted = max(NEEDS_CODE, key=lambda a: scores[a])
+    if not has_code and not (scores[wanted] >= 6
+                             and scores[wanted] > max(scores[GENERATE], scores[QUESTION])):
+        # Nothing to explain, score or run when the editor is empty. A
+        # question is still a question -- "what is a pointer" is not a
+        # request for a program. A plain "fix it" is kept as it is, so the
+        # answer can be "paste your code first" rather than a new program
+        # written to the description "fix it".
+        if scores[QUESTION] == 0 or scores[GENERATE] > scores[QUESTION]:
+            scores[GENERATE] += 4
+        for action in NEEDS_CODE:
             scores[action] = 0
         because.append("no code in the editor")
 

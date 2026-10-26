@@ -1,4 +1,3 @@
-"""Step 8: the report, and the JSON that is its single source of truth."""
 
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ def test_json_is_valid_and_complete() -> None:
 
 
 def test_score_breakdown_is_in_the_json() -> None:
-    """A reader must be able to reconstruct the score from the report alone."""
+
     data = json.loads(_report("quality/deep_nesting.c").to_json())
     readability = data["score"]["dimensions"]["readability"]
     assert readability["weight"] == 0.20
@@ -38,8 +37,8 @@ def test_markdown_covers_every_section() -> None:
     for heading in ("# Code analysis", "## Problems found", "## Quality score",
                     "## Measurements", "## Recommendations"):
         assert heading in text, heading
-    assert "What it means." in text
-    assert "How to fix it." in text
+    assert "What happened." in text
+    assert "Fix." in text
 
 
 def test_a_capped_score_says_why_in_the_report() -> None:
@@ -56,14 +55,9 @@ def test_clean_program_reports_no_problems() -> None:
 
 
 def test_a_security_error_is_not_a_compile_error() -> None:
-    """A program with a buffer overflow still compiled.
 
-    S_UNSAFE_FUNCTION is severity error because it is a real defect, but
-    counting it as a compile error made the report say "does not compile"
-    about a program that had just built and run.
-    """
     report = _report("security/unsafe_strcpy.c")
     assert report.compiles is True
-    assert report.errors                     # it does have errors
-    assert report.compile_errors == []       # none of them from the compiler
+    assert report.errors                     
+    assert report.compile_errors == []       
     assert "does not compile" not in to_markdown(report).lower()

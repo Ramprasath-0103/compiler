@@ -15,6 +15,8 @@ export default function App() {
   const [request, setRequest] = useState("");
   const [intent, setIntent] = useState(null);
   const [generated, setGenerated] = useState(null);
+  const [answer, setAnswer] = useState(null);
+  const [edit, setEdit] = useState(null);
   const [pipeline, setPipeline] = useState(null);
   const [improvement, setImprovement] = useState(null);
   const [tab, setTab] = useState("report");
@@ -33,6 +35,10 @@ export default function App() {
       .catch(() => setError("Cannot reach the analyzer. Is `nlpcc serve` running?"));
   }, []);
 
+  // An improvement was scored and prompted under these options; it describes
+  // nothing once they change.
+  useEffect(() => setImprovement(null), [run, ai, objectives]);
+
   function toggleObjective(name) {
     setObjectives((current) =>
       current.includes(name)
@@ -45,6 +51,8 @@ export default function App() {
     setError("");
     setIntent(null);
     setGenerated(null);
+    setAnswer(null);
+    setEdit(null);
   }
 
   // Clicking a finding puts the cursor on the line it is about. A textarea
@@ -93,7 +101,8 @@ export default function App() {
   }
 
   async function improveCode() {
-    const data = await post("/api/improve", { code, objectives }, "improve");
+    // The same run/ai options as the report, or "before" is a different number.
+    const data = await post("/api/improve", { code, objectives, run, ai }, "improve");
     if (data) setImprovement(data);
   }
 
@@ -125,16 +134,16 @@ export default function App() {
       }
       setIntent(data.intent);
       setTab("report");
-      if (data.generated) {
-        // Deliberately not copied into the editor: showing the same program
-        // twice, side by side, reads as two different results.
-        setGenerated(data.generated);
-        setReport(null);
-      } else if (data.report) {
-        setReport(data.report);
-      } else if (data.error) {
-        setError(data.error);
-      }
+      // A question gets an answer and an edit gets a diff. Only code -- a
+      // new program, or the user's own program changed -- comes with a
+      // button to put it in the editor; an answer never does.
+      setAnswer(data.answer || null);
+      setEdit(data.edit || null);
+      // Deliberately not copied into the editor: showing the same program
+      // twice, side by side, reads as two different results.
+      setGenerated(data.generated || null);
+      setReport(data.report || null);
+      if (data.error) setError(data.error);
     } catch {
       setError("Cannot reach the analyzer. Is `nlpcc serve` running?");
     } finally {
@@ -205,8 +214,8 @@ export default function App() {
           </div>
           <div className="examples">
             {[
-              "why does this not compile?",
-              "make it faster",
+              "what does this code do?",
+              "fix the error",
               "how good is my code?",
               "write a program that reverses a string",
             ].map((example) => (
@@ -301,16 +310,35 @@ export default function App() {
           {tab === "report" && (
             <>
               {intent && <IntentBadge intent={intent} />}
+              {answer && <AnswerView answer={answer} />}
+              {edit && (
+                <Improved
+                  improvement={edit}
+                  done="Changed as asked"
+                  notDone="Not changed"
+                  hideSameScore
+                  onUse={(c) => {
+                    setCode(c);
+                    setPipeline(null);
+                    setImprovement(null);
+                    setEdit(null);
+                    setReport(null);
+                  }}
+                />
+              )}
               {generated && (
                 <Generated
                   generated={generated}
+                  replacing={code.trim().length > 0}
                   onUse={(c) => {
                     setCode(c);
+                    setPipeline(null);
+                    setImprovement(null);
                     setGenerated(null);
                   }}
                 />
               )}
-              {!report && !generated && !error && !intent && <Empty />}
+              {!report && !generated && !answer && !edit && !error && !intent && <Empty />}
               {report && <Results report={report} onJump={jumpToLine} />}
             </>
           )}
@@ -331,6 +359,7 @@ export default function App() {
                 improvement={improvement}
                 onUse={(c) => {
                   setCode(c);
+                  setPipeline(null);
                   setImprovement(null);
                   setTab("report");
                 }}
@@ -410,30 +439,96 @@ function MultiSelect({ label, available, selected, onToggle, onAll, onNone }) {
   );
 }
 
+// One line saying what was done. The keyword stems it matched ("code",
+// "program") meant nothing to anyone reading them, so they are not shown.
 function IntentBadge({ intent }) {
   const weak = intent.confidence < 0.5;
   return (
     <div className={weak ? "intent weak" : "intent"}>
-      <div>
-        <strong>Understood as:</strong> {intent.summary}
-        {intent.objectives.length > 0 && (
-          <> — for {intent.objectives.join(", ")}</>
-        )}
-      </div>
-      <div className="muted">
-        {Math.round(intent.confidence * 100)}% confident
-        {intent.because.length > 0 && <> · matched {intent.because.join(", ")}</>}
-      </div>
-      {weak && (
-        <div className="muted">
-          That was a guess — rephrase if it is not what you wanted.
-        </div>
-      )}
+      <strong>Understood as:</strong> {intent.summary}
+      {intent.objectives.length > 0 && <> — for {intent.objectives.join(", ")}</>}
+      {weak && <span className="muted"> · not sure — rephrase if that is not what you meant</span>}
     </div>
   );
 }
 
-function Generated({ generated, onUse }) {
+// Answers come back as plain text the model formats lightly: ``` blocks,
+// `code`, **bold**, "- " and "1. " lists, "#" headings. Render those and
+// nothing else. Lists used to be run together into one line of prose
+// ("Two key operators: - &x — ...") and bold showed its asterisks.
+function AnswerView({ answer }) {
+  if (answer.error) {
+    return <p className="note">{answer.error}</p>;
+  }
+  const parts = answer.text.split(/```[a-zA-Z]*\n?/);
+  return (
+    <div className="block answer">
+      {parts.map((part, i) =>
+        i % 2 === 1 ? (
+          <pre key={i} className="snippet">{part.replace(/\n$/, "")}</pre>
+        ) : (
+          <Prose key={i} text={part} />
+        )
+      )}
+      {answer.provider && <p className="muted small">Answered by {answer.provider}</p>}
+    </div>
+  );
+}
+
+const BULLET = /^\s*[-*•]\s+/;
+const NUMBERED = /^\s*\d+[.)]\s+/;
+
+function Prose({ text }) {
+  // Group the lines into paragraphs and lists; a blank line ends either.
+  const blocks = [];
+  let current = null;
+  for (const line of text.split("\n")) {
+    const kind = BULLET.test(line) ? "ul" : NUMBERED.test(line) ? "ol" : "p";
+    if (!line.trim()) {
+      current = null;
+    } else if (kind !== "p" && current?.kind === kind) {
+      current.lines.push(line.replace(kind === "ul" ? BULLET : NUMBERED, ""));
+    } else if (kind === "p" && current?.kind === "p") {
+      current.lines.push(line);
+    } else {
+      current = {
+        kind,
+        lines: [kind === "p" ? line : line.replace(kind === "ul" ? BULLET : NUMBERED, "")],
+      };
+      blocks.push(current);
+    }
+  }
+  return blocks.map((block, i) => {
+    if (block.kind === "p") {
+      const heading = block.lines.length === 1 && /^#{1,6}\s+/.test(block.lines[0]);
+      return heading ? (
+        <p key={i}><strong>{inline(block.lines[0].replace(/^#{1,6}\s+/, ""))}</strong></p>
+      ) : (
+        <p key={i}>{inline(block.lines.join(" "))}</p>
+      );
+    }
+    const List = block.kind;
+    return (
+      <List key={i}>
+        {block.lines.map((item, j) => <li key={j}>{inline(item)}</li>)}
+      </List>
+    );
+  });
+}
+
+function inline(text) {
+  return text.split(/(`[^`]+`|\*\*[^*]+\*\*)/).map((bit, i) => {
+    if (bit.length > 1 && bit.startsWith("`") && bit.endsWith("`")) {
+      return <code key={i}>{bit.slice(1, -1)}</code>;
+    }
+    if (bit.length > 4 && bit.startsWith("**") && bit.endsWith("**")) {
+      return <strong key={i}>{bit.slice(2, -2)}</strong>;
+    }
+    return bit;
+  });
+}
+
+function Generated({ generated, replacing, onUse }) {
   return (
     <div className="block">
       <h3>
@@ -451,9 +546,11 @@ function Generated({ generated, onUse }) {
       {generated.code && (
         <>
           <pre className="generated-code">{generated.code}</pre>
-          <button className="secondary" onClick={() => onUse(generated.code)}>
-            Put it in the editor
-          </button>
+          {generated.accepted && (
+            <button className="secondary" onClick={() => onUse(generated.code)}>
+              {replacing ? "Replace my code with this" : "Put it in the editor"}
+            </button>
+          )}
         </>
       )}
       {generated.notes && <p className="muted">{generated.notes}</p>}
@@ -635,17 +732,29 @@ function Symbols({ rows, onJump }) {
   );
 }
 
-function Improved({ improvement, onUse }) {
+function Improved({
+  improvement,
+  onUse,
+  done = "Improved",
+  notDone = "Not accepted",
+  hideSameScore = false,
+}) {
   const before = improvement.before || {};
   const after = improvement.after || {};
+  // For an edit ("add comments") an unchanged score is not news; five tiles
+  // reading 100 → 100 just push the diff off the screen.
+  const showScore =
+    before.overall != null &&
+    after.overall != null &&
+    !(hideSameScore && before.overall === after.overall);
   return (
     <>
       <div className={improvement.accepted ? "summary ok" : "summary bad"}>
-        <strong>{improvement.accepted ? "Improved" : "Not accepted"}</strong>
+        <strong>{improvement.accepted ? done : notDone}</strong>
         <span>{improvement.reason}</span>
       </div>
 
-      {before.overall != null && after.overall != null && (
+      {showScore && (
         <div className="block">
           <h3>
             Score {before.overall} <span className="arrow">→</span>{" "}
@@ -718,9 +827,8 @@ function Empty() {
     <div className="empty">
       <p>Nothing analyzed yet.</p>
       <p className="muted">
-        Press Analyze. The sample has a missing semicolon — fix it and analyze
-        again to see the quality score and suggestions, which need a program
-        that compiles.
+        Press Analyze to check the sample, or paste your own C code. You can
+        also ask a question about it in plain English.
       </p>
     </div>
   );
@@ -857,10 +965,10 @@ function Findings({ findings, onJump }) {
           {d.explanation ? (
             <>
               <p>
-                <b>What it means.</b> {d.explanation}
+                <b>What happened.</b> {inline(d.explanation)}
               </p>
               <p>
-                <b>How to fix it.</b> {d.fix}
+                <b>Fix.</b> {inline(d.fix)}
               </p>
             </>
           ) : (

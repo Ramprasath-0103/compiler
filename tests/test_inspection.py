@@ -1,8 +1,4 @@
-"""The compilation-pipeline view.
 
-Its whole value is that it shows the real phases rather than a drawing of
-them, so the tests check it against the same objects the analysis uses.
-"""
 
 from __future__ import annotations
 
@@ -28,22 +24,22 @@ def test_the_tree_is_the_parser_s_own() -> None:
     tree = inspect_source(CORPUS / "clean.c")["phases"][1]["detail"]["tree"]
     assert tree["kind"] == "TranslationUnit"
     kinds = [child["kind"] for child in tree["children"]]
-    assert kinds.count("FunctionDef") == 2        # add() and main()
+    assert kinds.count("FunctionDef") == 2        
 
 
 def test_symbols_come_from_the_analyzer_and_exclude_the_standard_library() -> None:
     symbols = inspect_source(CORPUS / "clean.c")["phases"][2]["detail"]["symbols"]
     names = {s["name"] for s in symbols}
     assert {"add", "main"} <= names
-    assert "printf" not in names                  # declared by stdio.h, not here
+    assert "printf" not in names                  
     assert all(s["line"] > 0 for s in symbols)
 
 
 def test_a_broken_program_still_reports_every_phase() -> None:
-    """A file that fails to parse must not produce an empty pipeline view."""
+
     data = inspect_source(CORPUS / "syntax" / "missing_semicolon.c")
     assert len(data["phases"]) == 3
-    assert data["phases"][0]["ok"]                # it lexes fine
+    assert data["phases"][0]["ok"]               
     syntax = data["phases"][1]
     assert not syntax["ok"]
     assert any(d["code"] == "E_MISSING_SEMICOLON" for d in syntax["diagnostics"])

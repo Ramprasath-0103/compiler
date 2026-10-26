@@ -1,24 +1,4 @@
-"""The corpus is the specification.
 
-Every case in tests/corpus is a small broken C program paired with a
-``.expected.json`` describing what the assistant must say about it. Two things
-are asserted:
-
-  1. the expected finding is reported, at the right line and severity;
-  2. every reported finding has a plain-English explanation.
-
-(2) is the one that matters. A compiler already does (1); the point of this
-project is that nothing reaches the user as raw compiler jargon, so an
-unexplained finding is a failure even when the detection is correct.
-
-A case sets ``"quality": true`` when its problem is one no compiler reports --
-deep nesting, an unchecked allocation, opaque naming. That runs the step-6
-rule engine for that case, which is what makes the quality analyzer's claim
-("it finds what a compiler cannot") a test rather than an assertion.
-
-Cases marked "pending" describe behaviour a later step must deliver. They
-xfail rather than silently pass.
-"""
 
 from __future__ import annotations
 
@@ -30,9 +10,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from nlpcc import pipeline                      # noqa: E402
-from nlpcc.diagnostics import Diagnostic        # noqa: E402
-from nlpcc.explain import rules                 # noqa: E402
+from nlpcc import pipeline                      
+from nlpcc.diagnostics import Diagnostic        
+from nlpcc.explain import rules                
 
 CORPUS = Path(__file__).parent / "corpus"
 CASES = sorted(CORPUS.glob("*/*.c"))
@@ -84,7 +64,6 @@ def test_expected_findings_are_reported(source: Path) -> None:
 
 @pytest.mark.parametrize("source", CASES, ids=_case_id)
 def test_every_finding_is_explained(source: Path) -> None:
-    """No raw compiler jargon reaches the user. This is the project's premise."""
     case = _load(source)
     result = pipeline.analyze(source, run=case.get("run", False),
                               quality=case.get("quality", False))
@@ -97,7 +76,6 @@ def test_every_finding_is_explained(source: Path) -> None:
 
 
 def test_clean_program_reports_nothing() -> None:
-    """Guard against a rule engine that cries wolf on correct code."""
     clean = CORPUS / "clean.c"
     result = pipeline.analyze(clean, run=True, quality=True)
     assert result.ok, [str(d) for d in result.diagnostics]

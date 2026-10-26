@@ -6,7 +6,7 @@ venv/
 .pytest_cache/
 .DS_Store
 
-# build + run artifacts
+
 build/
 out/
 *.o
@@ -16,12 +16,11 @@ reports/
 *.db
 *.sqlite3
 
-# local secrets (LLM API keys)
+
 .env
 
-# model explanation cache
+
 .nlpcc-cache/
 
-# frontend
 node_modules/
 frontend/dist/

@@ -70,9 +70,9 @@ def to_markdown(report: Report) -> str:
                 w(f"Also line {related['line']}: {related['message']}")
                 w("")
             if diag.explanation:
-                w(f"**What it means.** {diag.explanation}")
+                w(f"**What happened.** {diag.explanation}")
                 w("")
-                w(f"**How to fix it.** {diag.fix}")
+                w(f"**Fix.** {diag.fix}")
             else:
                 w(f"**The compiler said.** {diag.message}")
             w("")

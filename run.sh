@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-#
-# Start everything and open the web interface.
-#
-#   ./run.sh            start the API and the web interface
-#   ./run.sh setup      install dependencies only
-#   ./run.sh test       run the test suite
-#   ./run.sh stop       stop anything left running on the ports
-#
-# Ctrl-C stops both servers.
 
 set -u
 
@@ -84,7 +75,6 @@ echo
 free_port "$API_PORT"
 free_port "$WEB_PORT"
 
-# Which model, if any. Everything except the three AI features works without one.
 MODEL=$("$PY" -m nlpcc models 2>/dev/null | tr -d '\n' | sed 's/^ *//;s/ *$//')
 if [ -z "$MODEL" ]; then
     MODEL="none"
@@ -92,8 +82,9 @@ fi
 case "$MODEL" in
     *"no model available"*)
         warn "  No model: AI explanations, AI analysis and code generation are off."
-        warn "  Everything else works. To turn them on, put a key in .env:"
-        warn "      echo 'GEMINI_API_KEY=your-key' >> .env"
+        warn "  Everything else works. Configure your local API in .env:"
+        warn "      NLPCC_LOCAL_URL=https://your-local-llm/v1"
+        warn "      NLPCC_LOCAL_API_KEY=your-key"
         ;;
     *) echo "  model: $MODEL" ;;
 esac
@@ -115,11 +106,6 @@ API_PID=$!
 (cd frontend && npm run dev -- --port "$WEB_PORT" >/tmp/nlpcc-web.log 2>&1) &
 WEB_PID=$!
 
-# Wait for both to answer before telling anyone where to look.
-#
-# The web check has to use "localhost", not 127.0.0.1: vite binds the name,
-# which resolves to ::1 here, so probing the IPv4 address reports a server
-# that is plainly running as failed to start.
 for _ in $(seq 1 40); do
     api_up=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$API_PORT/api/health" 2>/dev/null || echo 000)
     web_up=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$WEB_PORT/" 2>/dev/null || echo 000)

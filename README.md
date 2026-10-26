@@ -10,18 +10,18 @@ English instead of compiler jargon.
 All nine steps implemented. The pipeline compiles, detects, explains, scores,
 advises and reports.
 
-| Step | What | State |
-|------|------|-------|
-| 1 | Scope contract (`docs/scope.md`) | **done** — subset grammar settled |
-| 2 | Repo, CLI, corpus | **done** — 21 cases |
-| 3 | Pipeline + ground-truth compiler + runtime executor | **done** |
-| 4 | Our own front end (lexer → parser → semantic) | **done** — owns 9 of the corpus cases |
-| 5 | Explanation layer, rules first | **done** — 100% corpus coverage |
-| 5b | Model explanations for unmatched findings | **done** — cached, optional |
-| 6 | Quality scoring, five dimensions | **done** — 14 rules, traceable score |
-| 7 | Optimization recommender | **done** — objective-filtered |
-| 8 | Report generation | **done** — JSON source, Markdown render |
-| 9 | Natural-language → C generation | **done** — validated by our own pipeline |
+| Step | What                                                | State                                    |
+| ---- | --------------------------------------------------- | ---------------------------------------- |
+| 1    | Scope contract (`docs/scope.md`)                    | **done** — subset grammar settled        |
+| 2    | Repo, CLI, corpus                                   | **done** — 21 cases                      |
+| 3    | Pipeline + ground-truth compiler + runtime executor | **done**                                 |
+| 4    | Our own front end (lexer → parser → semantic)       | **done** — owns 9 of the corpus cases    |
+| 5    | Explanation layer, rules first                      | **done** — 100% corpus coverage          |
+| 5b   | Model explanations for unmatched findings           | **done** — cached, optional              |
+| 6    | Quality scoring, five dimensions                    | **done** — 14 rules, traceable score     |
+| 7    | Optimization recommender                            | **done** — objective-filtered            |
+| 8    | Report generation                                   | **done** — JSON source, Markdown render  |
+| 9    | Natural-language → C generation                     | **done** — validated by our own pipeline |
 
 Not built, deliberately: React frontend, PostgreSQL, multi-language support.
 The CLI is the deliverable. See `docs/scope.md`.
@@ -36,9 +36,9 @@ Installs anything missing the first time, starts both servers, and opens
 http://localhost:5173. Ctrl-C stops both.
 
 ```bash
-./run.sh setup     # install dependencies only
-./run.sh test      # run the test suite
-./run.sh stop      # stop whatever is left on the ports
+./run.sh setup
+./run.sh test
+./run.sh stop
 ```
 
 The terminal interface, if you prefer it:
@@ -72,6 +72,8 @@ missing.
 ./.venv/bin/python -m nlpcc ask "why does this not compile" -f program.c
 ./.venv/bin/python -m nlpcc ask "make it faster and use less memory" -f program.c
 ./.venv/bin/python -m nlpcc ask "write me a program that reverses a string"
+./.venv/bin/python -m nlpcc ask "what does this code do" -f program.c
+./.venv/bin/python -m nlpcc ask "fix the error" -f program.c
 ```
 
 The request is routed by keyword rules in `nlpcc/nlp/intent.py` — no model,
@@ -79,44 +81,44 @@ no API key, instant, and it reports why it decided what it decided. It picks
 the stage of the pipeline to run and, for "make it faster", pulls the
 objectives out of the sentence.
 
+Questions ("what does this code do", "what is a pointer") get a short answer
+from the model, grounded in what the compiler found and what the program
+printed when it ran. Requests to change the code ("fix the error", "add
+comments", "use a while loop") come back as a diff that has been checked to
+compile. Both need a model; without one, a question still gets the analysis.
+
 ## Running without an API key
 
 ```bash
-./.venv/bin/python -m nlpcc models        # says which model it found
+./.venv/bin/python -m nlpcc models
 ```
 
 The model-backed parts — explaining unmatched diagnostics, AI code analysis,
-and code generation — use whatever is available:
+and code generation — use the configured OpenAI-compatible local API first.
+This can be LM Studio or another local server implementing the OpenAI chat
+completions API. The model ID is discovered from its `/models` endpoint
+unless `NLPCC_LOCAL_MODEL` pins one.
 
-1. **Gemini** — `export GEMINI_API_KEY=...` (free key from
-   [AI Studio](https://aistudio.google.com/apikey)).
-2. **Anthropic** — used if its credentials resolve.
-3. **LM Studio** — load a model and run `lms server start`. No API key.
-4. **Ollama** — just run it. No API key.
+Set the API's base URL and key in `.env` (the key is optional for servers that
+do not require authentication):
 
-Pin one with `NLPCC_PROVIDER=gemini` (or `lmstudio`, `ollama`, `anthropic`).
-
-The order is about quality, not availability. **Everything outside these three
-features works with no model at all** — the compiler, the explanations, the
-five dimensions, the score and the suggestions are all deterministic. The
-local providers are the fallback that always works; a small local model is
-rougher and slower, which is why the provider that produced a given answer is
-reported alongside it.
-
-Measured on `generate`, same prompt, five runs each: a local 0.8B model
-produced three compiling programs out of five; Gemini produced five.
-
-Gemini's free tier meters each model separately, so a quota refusal on one
-falls back to the other rather than failing.
-
-**Never commit the key.** Put it in `.env`, which is gitignored and read
-automatically at startup:
-
-```bash
-echo 'GEMINI_API_KEY=your-key' >> .env
+```dotenv
+NLPCC_PROVIDER=openai-compatible
+NLPCC_LOCAL_URL=https://your-local-llm/v1
+NLPCC_LOCAL_API_KEY=your-key
+NLPCC_LOCAL_MODEL=your-model   # optional
 ```
 
-Anything already exported in the shell wins over `.env`.
+The URL should be the API base URL, ending in `/v1` when required by the
+server, rather than the full `/models` or `/chat/completions` URL. The
+`.env` file is gitignored and read automatically at startup; values already
+exported in the shell take precedence.
+
+Anthropic and Ollama remain available as alternate providers. Pin one with
+`NLPCC_PROVIDER=anthropic` or `NLPCC_PROVIDER=ollama`. **Everything outside
+the three model-backed features works with no model at all** — the compiler,
+deterministic explanations, five dimensions, score and suggestions do not
+depend on an API.
 
 ## The web interface
 
@@ -124,8 +126,8 @@ Anything already exported in the shell wins over `.env`.
 server on :5173, which proxies `/api` to it. To run them separately:
 
 ```bash
-./.venv/bin/python -m nlpcc serve            # terminal 1 -- API on :8000
-cd frontend && npm run dev                   # terminal 2 -- UI on :5173
+./.venv/bin/python -m nlpcc serve
+cd frontend && npm run dev
 ```
 
 Paste C code, pick what to optimize for, and press Analyze — or type what you
@@ -144,7 +146,7 @@ Three views, as tabs:
 - **Improved version** — a rewrite that addresses the findings, shown as a
   diff, accepted only if it still compiles and scores no worse. "Optimized"
   is a measurement here, not a claim. The options are fetched from `/api/options`, so the UI can
-only ever offer objectives the analyzer actually supports.
+  only ever offer objectives the analyzer actually supports.
 
 The server binds to localhost and nothing else: "Run the program" compiles and
 executes whatever is submitted, with a timeout and a scratch directory as its
@@ -186,7 +188,7 @@ gap visible. Programs outside the subset still work, because clang covers them.
 
 **Rules before the model.** `nlpcc/explain/rules.py` maps a diagnostic code to
 an explanation deterministically, offline, with no model call. The LLM layer
-will sit *behind* it, consulted only for findings no rule matched and labelled
+will sit _behind_ it, consulted only for findings no rule matched and labelled
 as model-generated in the report. Built the other way round, the demo dies
 with the network and no two runs produce the same report.
 
@@ -206,18 +208,27 @@ step-6 rule engine. They will start passing when it lands.
 ### Adding a case
 
 ```bash
-$EDITOR tests/corpus/semantic/my_case.c          # the broken program
+$EDITOR tests/corpus/semantic/my_case.c         \
 ./.venv/bin/python -m nlpcc analyze tests/corpus/semantic/my_case.c -v
 ```
 
-Write the `.expected.json` by hand from what you *want* reported — not by
+Write the `.expected.json` by hand from what you _want_ reported — not by
 pasting current output, which only freezes today's behaviour:
 
 ```json
-{ "title": "what is wrong with this program",
+{
+  "title": "what is wrong with this program",
   "run": false,
-  "expect": [{ "line": 5, "severity": "error", "phase": "semantic",
-               "code": "clang:...", "explained": true }] }
+  "expect": [
+    {
+      "line": 5,
+      "severity": "error",
+      "phase": "semantic",
+      "code": "clang:...",
+      "explained": true
+    }
+  ]
+}
 ```
 
 `code` and `phase` are optional; `line: null` matches a finding with no line.
@@ -234,7 +245,7 @@ to one actionable sentence.
 ## Runtime errors
 
 Programs are compiled with `-fsanitize=undefined` before running, so a division
-by zero or an out-of-bounds write is reported *with a line number* rather than
+by zero or an out-of-bounds write is reported _with a line number_ rather than
 as a bare "segmentation fault". This matters more than it sounds: on Apple
 Silicon, integer division by zero does not fault at all — the program keeps
 running with a meaningless value, and without the sanitizer there is nothing to
@@ -246,4 +257,5 @@ report. See `tests/corpus/runtime/divide_by_zero.c`.
 today is a wall-clock timeout and a scratch working directory — fine for a
 local CLI, not fine for anything networked. Before this is ever exposed beyond
 the terminal it needs rlimits, no network, and an unprivileged user.
+
 # Compiler_Project

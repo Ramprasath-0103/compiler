@@ -1,9 +1,3 @@
-"""Step 6: metrics, rules and scoring.
-
-The metric assertions use numbers checked by hand against the corpus files --
-if a refactor changes how complexity or nesting is counted, these fail rather
-than quietly redefining what the score means.
-"""
 
 from __future__ import annotations
 
@@ -16,19 +10,14 @@ from nlpcc.diagnostics import Phase, Severity
 from nlpcc.quality import astjson, metrics, rules, score
 
 
-# --- the AST layer ------------------------------------------------------------
 def test_includes_are_excluded() -> None:
-    """stdio.h defines hundreds of functions; none of them are the user's code."""
+  
     funcs = astjson.functions(CORPUS / "clean.c")
     assert sorted(f.name for f in funcs) == ["add", "main"]
 
 
 def test_locations_are_resolved_per_statement() -> None:
-    """clang omits unchanged lines; every statement must still get its own.
 
-    This is the bug that made every finding in a function point at the
-    function's opening line.
-    """
     source = CORPUS / "security" / "unchecked_malloc.c"
     body = astjson.body_of(astjson.functions(source)[0])
     lines = {n.kind: n.line for n in body.walk()}
@@ -40,40 +29,38 @@ def test_locations_are_resolved_per_statement() -> None:
 def test_callee_name_is_the_function_not_an_argument() -> None:
     source = CORPUS / "security" / "unchecked_malloc.c"
     fn = metrics.measure(source).functions[0]
-    assert fn.calls == ["malloc"]        # not "data", the argument
+    assert fn.calls == ["malloc"]       
 
 
 def test_fortified_builtins_resolve_to_the_written_name() -> None:
-    """macOS rewrites strcpy to __builtin___strcpy_chk; the rule still fires."""
+
     assert metrics._normalize_call("__builtin___strcpy_chk") == "strcpy"
     assert metrics._normalize_call("__builtin___sprintf_chk") == "sprintf"
     assert metrics._normalize_call("printf") == "printf"
 
 
-# --- metrics -----------------------------------------------------------------
+
 def test_metrics_match_hand_counts() -> None:
     fns = {f.name: f for f in metrics.measure(CORPUS / "quality" / "deep_nesting.c").functions}
     classify = fns["classify"]
     assert classify.parameters == 4
-    assert classify.max_nesting == 5          # five nested ifs
-    assert classify.complexity == 6           # one path + five branches
+    assert classify.max_nesting == 5         
+    assert classify.complexity == 6          
     assert (classify.line, classify.end_line) == (3, 16)
 
 
 def test_comment_density_ignores_trailing_comments() -> None:
-    """A line of code with a trailing comment is code, not a comment line."""
+
     total, code, comment, blank = metrics._count_lines(
         "int x = 1; // set x\n// a real comment\n\n/* block */\nint y = 2;\n")
-    # Code: the two declarations. Comments: the // line and the block line.
-    # The trailing "// set x" does not make its line a comment line, which is
-    # what keeps the readability score from being gamed by trailing comments.
+
     assert (code, comment, blank) == (2, 2, 1)
     assert total == 5
 
 
-# --- rules -------------------------------------------------------------------
+
 def test_correct_code_produces_no_findings() -> None:
-    """The one that matters: a rule engine that cries wolf is worse than none."""
+
     assert rules.analyze(CORPUS / "clean.c") == []
 
 
@@ -85,13 +72,13 @@ def test_correct_code_produces_no_findings() -> None:
     ("security/unsafe_strcpy.c", "S_UNSAFE_FUNCTION"),
 ])
 def test_rule_fires_on_its_case(case: str, expected_code: str) -> None:
-    """These are the three corpus cases the compiler alone cannot catch."""
+
     found = rules.analyze(CORPUS / case)
     assert expected_code in {d.code for d in found}, [d.code for d in found]
 
 
 def test_findings_arrive_already_explained() -> None:
-    """Quality findings skip the compiler-rule table, so they bring their own."""
+
     for diag in rules.analyze(CORPUS / "security" / "unchecked_malloc.c"):
         assert diag.phase is Phase.QUALITY
         assert diag.explanation and diag.fix
@@ -100,7 +87,7 @@ def test_findings_arrive_already_explained() -> None:
 
 
 def test_two_parameter_helper_is_not_flagged_for_naming() -> None:
-    """add(int a, int b) is idiomatic; five one-letter names is not."""
+
     codes = {d.code for d in rules.analyze(CORPUS / "clean.c")}
     assert "R_OPAQUE_NAMES" not in codes
 
@@ -117,7 +104,6 @@ def test_every_rule_has_a_weightable_dimension() -> None:
         assert rule.explanation and rule.fix, code
 
 
-# --- scoring -----------------------------------------------------------------
 def test_clean_code_scores_full_marks() -> None:
     assert score.compute(rules.analyze(CORPUS / "clean.c")).overall == 100
 
@@ -127,12 +113,11 @@ def test_weights_sum_to_one() -> None:
 
 
 def test_critical_security_finding_caps_the_overall_score() -> None:
-    """The open question from docs/scope.md: tidy naming must not rescue a
-    program with a buffer overflow."""
+
     result = score.compute(rules.analyze(CORPUS / "security" / "unsafe_strcpy.c"))
     assert result.capped_by_security
     assert result.overall == score.CRITICAL_SECURITY_CAP
-    # Every other dimension is perfect, and it still does not score well.
+
     assert result.dimensions["readability"] == 100
 
 
@@ -153,7 +138,7 @@ def test_every_deduction_is_traceable() -> None:
 
 
 def test_compiler_errors_cost_the_practices_dimension() -> None:
-    """A file that does not compile cannot score 100 for quality."""
+
     from nlpcc import pipeline
     analysis = pipeline.analyze(CORPUS / "semantic" / "undeclared_variable.c")
     result = score.compute(analysis.diagnostics)
@@ -171,9 +156,8 @@ def test_scores_stay_in_range() -> None:
             assert 0 <= value <= 100, (case, name)
 
 
-# --- the AI analysis stage ----------------------------------------------------
 def test_ai_findings_are_scored_by_their_own_dimension() -> None:
-    """AI findings carry their dimension and penalty instead of a static rule."""
+
     from nlpcc.diagnostics import Diagnostic, Origin, Phase, Position, Severity
 
     finding = Diagnostic(
@@ -189,18 +173,14 @@ def test_ai_findings_are_scored_by_their_own_dimension() -> None:
 
 
 def test_ai_analysis_is_silent_without_a_model() -> None:
-    """The rules must work alone; the AI stage is additive, never required."""
+
     from nlpcc.quality import ai
 
     assert ai.analyze(CORPUS / "clean.c") == []
 
 
 def test_ai_stage_adds_to_the_rules_without_changing_them(monkeypatch) -> None:
-    """The AI stage runs beside the rule engine, never in place of it.
 
-    The model is faked: what is being tested is the merge, and a real call
-    would make this test depend on a model being installed.
-    """
     from nlpcc import pipeline
     from nlpcc.diagnostics import Diagnostic, Origin, Phase, Position, Severity
     from nlpcc.quality import ai
@@ -224,18 +204,12 @@ def test_ai_stage_adds_to_the_rules_without_changing_them(monkeypatch) -> None:
     assert rule_codes(with_ai) == rule_codes(without)
     assert "AI_SECURITY" in {d.code for d in with_ai.diagnostics}
     assert "AI_SECURITY" not in {d.code for d in without.diagnostics}
-    # And it is scored: the AI finding costs the dimension it names.
     assert with_ai.score.dimensions["security"] == 85
 
 
-# --- toolchain compatibility --------------------------------------------------
-def test_diagnostic_flags_match_the_compiler() -> None:
-    """clang-only spellings sent to GNU gcc fail before anything is analyzed.
 
-    Homebrew puts a real gcc on PATH as gcc-15, and we used to prefer it over
-    clang while sending -ferror-limit, -fno-caret-diagnostics and
-    -fno-color-diagnostics, none of which GNU gcc has.
-    """
+def test_diagnostic_flags_match_the_compiler() -> None:
+
     from nlpcc.backends import clang_runner as runner
 
     assert "-ferror-limit=0" in runner.CLANG_FLAGS
@@ -243,38 +217,32 @@ def test_diagnostic_flags_match_the_compiler() -> None:
     assert not any(f.startswith("-ferror-limit") for f in runner.GCC_FLAGS)
     assert not any(f.startswith("-fmax-errors") for f in runner.CLANG_FLAGS)
 
-    # clang is preferred: the parser is written against its output format.
     assert runner.CC_CANDIDATES[0] == "clang"
     assert runner.CC_CANDIDATES.index("clang") < runner.CC_CANDIDATES.index("gcc")
 
 
 def test_a_sanitizer_that_cannot_link_does_not_fail_the_build(monkeypatch) -> None:
-    """A missing sanitizer runtime is a toolchain gap, not a broken program."""
+
     from nlpcc.backends import executor
 
     monkeypatch.setattr(executor, "SANITIZE_FLAGS",
                         ("-fsanitize=undefined", "-Wl,--nonexistent-option-xyz"))
     result = executor.compile_and_run(CORPUS / "clean.c")
 
-    assert result.compiled is True          # it still built
-    assert result.sanitized is False        # and admits the checks were off
+    assert result.compiled is True         
+    assert result.sanitized is False        
     assert result.stdout.strip() == "7"
 
 
 def test_runtime_measurements_describe_the_program_not_the_compiler() -> None:
-    """RUSAGE_CHILDREN reports the heaviest child, which after a build is clang.
 
-    It reported 36 MB for a program using a few hundred kilobytes, because
-    the compiler had run in the same process tree. os.wait4 measures the one
-    process we care about.
-    """
     from nlpcc.backends import executor
 
     result = executor.compile_and_run(CORPUS / "clean.c")
     m = result.measurements()
 
     assert result.stdout.strip() == "7"
-    assert 0 < m["peak_memory_kb"] < 20_000      # a tiny program, not a compiler
+    assert 0 < m["peak_memory_kb"] < 20_000     
     assert m["wall_ms"] > 0
     assert m["build_ms"] > 0
     assert m["exit_code"] == 0

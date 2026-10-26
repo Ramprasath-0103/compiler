@@ -1,20 +1,3 @@
-"""Our own front end, tested on its own terms and against clang.
-
-tests/test_corpus.py asks what the *assistant* reports, whoever found it. This
-file asks what our own lexer, parser and semantic analyzer found, which is a
-different question with a different failure mode: the pipeline would look
-healthy with the front end silent, because clang would be covering for it.
-
-Three things are pinned down here:
-
-  1. our front end detects the corpus cases itself, with our own codes;
-  2. it stays silent on programs that are correct -- a front end that cries
-     wolf is worse than none;
-  3. every finding clang reports that we do not is written down in
-     ``KNOWN_GAPS`` below. Gaps are allowed, surprises are not: closing one
-     fails this test, and so does opening one. The table is the honest answer
-     to "how much of this is actually yours".
-"""
 
 from __future__ import annotations
 
@@ -27,14 +10,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from nlpcc import pipeline                                      # noqa: E402
-from nlpcc.diagnostics import Diagnostic, Origin, Severity      # noqa: E402
-from nlpcc.explain import rules                                 # noqa: E402
-from nlpcc.frontend import FRONTEND_CODES                       # noqa: E402
-from nlpcc.frontend.lexer import Lexer                          # noqa: E402
-from nlpcc.frontend.parser import Parser                        # noqa: E402
-from nlpcc.frontend.semantic import SemanticAnalyzer            # noqa: E402
-from nlpcc.frontend.tokens import TokenKind                     # noqa: E402
+from nlpcc import pipeline                                     
+from nlpcc.diagnostics import Diagnostic, Origin, Severity     
+from nlpcc.explain import rules                                 
+from nlpcc.frontend import FRONTEND_CODES                       
+from nlpcc.frontend.lexer import Lexer                         
+from nlpcc.frontend.parser import Parser                        
+from nlpcc.frontend.semantic import SemanticAnalyzer            
+from nlpcc.frontend.tokens import TokenKind                     
 
 CORPUS = Path(__file__).parent / "corpus"
 FRONTEND_DIR = Path(__file__).resolve().parents[1] / "nlpcc" / "frontend"
@@ -46,7 +29,7 @@ def _case_id(path: Path) -> str:
 
 
 def analyze_with_frontend(source: Path) -> list[Diagnostic]:
-    """Run the three phases directly, bypassing clang and the explain layer."""
+
     text = source.read_text()
     lexer = Lexer(text, str(source))
     tokens = lexer.tokenize()
@@ -63,12 +46,6 @@ def frontend_only(diags: list[Diagnostic]) -> list[Diagnostic]:
 def lines_of(diags: list[Diagnostic]) -> set[int | None]:
     return {d.position.line if d.position else None for d in diags}
 
-
-# -- 1. what we detect ourselves -----------------------------------------
-
-# case -> (our code, the line it must be reported on). These are the cases the
-# front end is responsible for; anything here regressing to clang-only is a
-# real loss of project content, not a cosmetic failure.
 OWN_DETECTIONS: dict[str, tuple[str, int]] = {
     "syntax/missing_semicolon": ("E_MISSING_SEMICOLON", 4),
     "syntax/missing_paren": ("E_MISSING_PAREN", 5),
@@ -96,7 +73,6 @@ def test_frontend_detects_the_case_itself(case_id: str) -> None:
 
 @pytest.mark.parametrize("case_id", sorted(OWN_DETECTIONS))
 def test_the_finding_reaches_the_report_as_ours(case_id: str) -> None:
-    """Through the whole pipeline, with origin=frontend -- not clang's copy."""
     code, line = OWN_DETECTIONS[case_id]
     result = pipeline.analyze(CORPUS / f"{case_id}.c")
     assert result.frontend_available
@@ -108,7 +84,6 @@ def test_the_finding_reaches_the_report_as_ours(case_id: str) -> None:
 
 
 def test_declaration_sites_travel_with_the_finding() -> None:
-    """The "declared here" channel -- meta["related"] -- carries real lines."""
     found = analyze_with_frontend(CORPUS / "semantic" / "wrong_arg_count.c")
     call = next(d for d in found if d.code == "E_WRONG_ARG_COUNT")
     related = call.meta.get("related")
@@ -120,11 +95,6 @@ def test_declaration_sites_travel_with_the_finding() -> None:
     assert read.meta["related"][0]["line"] == 4
 
 
-# -- 2. silence on correct code -------------------------------------------
-
-# Programs that are legal C. Some have bugs that only show up when they run
-# (a division by zero, an overrun) and some are merely ugly, but there is
-# nothing for a lexer, parser or semantic analyzer to object to in any of them.
 LEGAL_PROGRAMS = ["clean.c", "quality/deep_nesting.c", "quality/poor_naming.c",
                   "runtime/array_overrun.c", "runtime/divide_by_zero.c",
                   "runtime/infinite_loop.c", "runtime/null_dereference.c",
@@ -141,7 +111,6 @@ def test_frontend_is_silent_on_legal_programs(name: str) -> None:
 
 
 def test_one_mistake_is_one_finding() -> None:
-    """Recovery, the whole point of it: no cascade from a single missing ';'."""
     source = """int main(void) {
     int a = 1;
     int b = 2
@@ -165,23 +134,14 @@ def test_one_mistake_is_one_finding() -> None:
     assert found[0].position.line == 3
 
 
-# -- 3. the gap against clang ---------------------------------------------
-
-# case -> lines where clang reports something our front end does not, with the
-# reason. Shrink this table, never grow it: each entry is work the project has
-# not done, or a divergence it has decided on.
 KNOWN_GAPS: dict[str, dict[int, str]] = {
-    # -Wformat: comparing a format string against its arguments is a step-6
-    # quality check, and printf's signature is not visible to us anyway.
+
     "semantic/format_mismatch": {5: "step 6: -Wformat, format string vs arguments"},
-    # -Wunused-variable on both: unused-value analysis is step 6.
+
     "semantic/missing_return": {2: "step 6: -Wunused-variable"},
     "semantic/out_of_scope": {5: "step 6: -Wunused-variable"},
-    # Our lexer ends an unterminated string at the end of its line and the
-    # block then closes normally, so clang's follow-on "expected '}'" has
-    # nothing to correspond to. A decision, not a miss -- see lexer.py.
+
     "syntax/unterminated_string": {6: "recovery divergence: clang's cascade after the bad line"},
-    # The case that exists to prove the fall-through works.
     "subset/struct_outside_subset": {12: "by design: struct is outside the subset, clang covers it"},
 }
 
@@ -204,12 +164,7 @@ def test_gap_against_clang_is_the_declared_one(source: Path) -> None:
 
 @pytest.mark.parametrize("source", CASES, ids=_case_id)
 def test_no_hard_error_is_missed(source: Path) -> None:
-    """The stricter half: a clang *error* we do not report is a real hole.
 
-    Warnings may legitimately be clang's alone -- most of them are quality
-    metrics belonging to step 6 -- but an error is a program that will not
-    compile, and our front end claims to find those.
-    """
     case_id = _case_id(source)
     result = pipeline.analyze(source, run=False)
     hard = {d.position.line for d in result.diagnostics
@@ -220,11 +175,9 @@ def test_no_hard_error_is_missed(source: Path) -> None:
     assert not missed, f"{case_id}: clang reports an error at {sorted(missed)} and we do not"
 
 
-# -- the premise: every code we can emit has an explanation ---------------
-
 
 def _codes_in_source() -> set[str]:
-    """Every E_/W_ code literal appearing in nlpcc/frontend."""
+
     found: set[str] = set()
     for path in FRONTEND_DIR.glob("*.py"):
         found |= set(re.findall(r'"([EW]_[A-Z0-9_]+)"', path.read_text()))
@@ -240,7 +193,7 @@ def test_every_frontend_code_has_a_rule() -> None:
 
 
 def test_the_code_registry_matches_the_source() -> None:
-    """A new check cannot be added without registering and explaining it."""
+
     in_source = _codes_in_source()
     registered = set(FRONTEND_CODES)
     assert in_source - registered == set(), (
@@ -258,8 +211,6 @@ def test_our_findings_are_all_explained(source: Path) -> None:
             f"{diag.code} reached the user as raw text: {diag.message}")
 
 
-# -- the lexer, on its own -------------------------------------------------
-
 
 def test_lexer_tracks_line_and_column() -> None:
     tokens = Lexer("int x;\n  x = 42;\n").tokenize()
@@ -269,7 +220,7 @@ def test_lexer_tracks_line_and_column() -> None:
 
 
 def test_lexer_keeps_comments() -> None:
-    """The readability metric counts comment density and cannot recover them."""
+
     tokens = Lexer("// explain\nint x; /* and\n more */\n").tokenize()
     comments = [t for t in tokens if t.kind is TokenKind.COMMENT]
     assert [t.text for t in comments] == ["// explain", "/* and\n more */"]
@@ -291,7 +242,6 @@ def test_preprocessor_directives_are_recorded_not_expanded() -> None:
     assert directives == ["#include <stdio.h>", "#define N 4"]
 
 
-# -- the parser and analyzer, on constructs the corpus does not cover -----
 
 
 def _frontend_codes_for(source: str) -> list[str]:
@@ -312,10 +262,8 @@ def _frontend_codes_for(source: str) -> list[str]:
     ("int main(void) { int a[2]; a[0 = 1; return 0; }", ["E_MISSING_BRACKET"]),
     ("int main(void) { int x = ; return x; }", ["E_EXPECTED_EXPRESSION"]),
     ("int main(void) { 2x = 1; return 0; }", ["E_MALFORMED_NUMBER"]),
-    # the unclosed comment swallows the closing brace, so the block is open too
     ("int main(void) { /* never closed\n return 0; }",
      ["E_UNTERMINATED_COMMENT", "E_MISSING_BRACE"]),
-    # legal C the analyzer must not object to
     ("int main(void) { int p = 0; int *q = &p; return *q; }", []),
     ("int f(void);\nint f(void) { return 1; }\nint main(void) { return f(); }", []),
     ("int main(void) { int i; for (i = 0; i < 3; i++) { continue; } return i; }", []),
@@ -342,7 +290,6 @@ def test_outside_the_subset_is_one_note_and_no_errors(source: str) -> None:
 
 
 def test_unparsed_constructs_silence_undeclared_reporting() -> None:
-    """A skipped construct declares names we never saw, so we stop guessing."""
     codes = _frontend_codes_for(
         "struct point { int x; };\n"
         "int main(void) { struct point p; p.x = 1; return p.x + whatever; }")
@@ -359,20 +306,13 @@ def test_unknown_header_silences_undeclared_reporting() -> None:
 def test_expected_json_exists_for_every_case() -> None:
     missing = [_case_id(c) for c in CASES if not c.with_suffix(".expected.json").exists()]
     assert not missing, missing
-    for case in CASES:                       # and each one parses
+    for case in CASES:                       
         json.loads(case.with_suffix(".expected.json").read_text())
 
 
-# -- 4. the subset is a limit on us, not an error in the user's code ----------
 
 def test_valid_c_outside_the_subset_is_a_note_not_an_error(tmp_path) -> None:
-    """If clang compiles it, our errors are subset limits and must not say error.
 
-    `for (size_t i = 0; ...)` made our parser emit six cascading errors on a
-    program clang accepted silently: the subset has no typedefs and the
-    for-init clause had no path for an unknown type name. Telling a user their
-    working program is broken is worse than saying we could not model it.
-    """
     from nlpcc import pipeline
     from nlpcc.diagnostics import Severity
 
@@ -390,11 +330,10 @@ def test_valid_c_outside_the_subset_is_a_note_not_an_error(tmp_path) -> None:
                 if d.severity in (Severity.ERROR, Severity.FATAL)]
     notes = [d for d in result.diagnostics if d.code == "W_OUTSIDE_SUBSET"]
     assert len(notes) == 1
-    assert notes[0].meta["demoted_from"]        # records what was suppressed
+    assert notes[0].meta["demoted_from"]       
 
 
 def test_real_errors_are_not_demoted(tmp_path) -> None:
-    """The demotion only applies when clang found nothing wrong."""
     from nlpcc import pipeline
     from nlpcc.diagnostics import Severity
 
@@ -405,3 +344,65 @@ def test_real_errors_are_not_demoted(tmp_path) -> None:
     assert not result.subset_limited
     assert [d for d in result.diagnostics
             if d.severity in (Severity.ERROR, Severity.FATAL)]
+
+
+def _explained(tmp_path, code: str):
+    from nlpcc import pipeline
+
+    path = tmp_path / "x.c"
+    path.write_text(code)
+    return pipeline.analyze(path).diagnostics
+
+
+def test_a_missing_semicolon_shows_the_fixed_line(tmp_path) -> None:
+    diags = _explained(tmp_path, "int main(void) {\n    int count = 0\n    return count;\n}\n")
+    semi = next(d for d in diags if d.code == "E_MISSING_SEMICOLON")
+    assert "`int count = 0`" in semi.explanation
+    assert semi.fix == "Make it `int count = 0;`."
+
+
+def test_a_typo_gets_a_did_you_mean(tmp_path) -> None:
+    diags = _explained(tmp_path, "int main(void) {\n    int total = 1;\n    return totl;\n}\n")
+    unknown = next(d for d in diags if "totl" in d.message)
+    assert "Did you mean `total`?" in unknown.explanation
+    assert unknown.fix == "Change `totl` to `total`."
+
+
+def test_a_variable_out_of_scope_says_where_it_lived(tmp_path) -> None:
+    code = ("int main(void) {\n    for (int i = 0; i < 3; i++) {\n"
+            "        int inner = i;\n    }\n    return inner;\n}\n")
+    unknown = next(d for d in _explained(tmp_path, code) if "inner" in d.message
+                   and d.severity.value == "error")
+    assert "declared on line 3" in unknown.explanation
+    assert "already closed" in unknown.explanation
+
+
+def test_string_is_explained_as_not_c(tmp_path) -> None:
+    code = '#include <stdio.h>\nint main(void) {\n    string name = "bob";\n    return 0;\n}\n'
+    diag = next(d for d in _explained(tmp_path, code) if "'string'" in d.message)
+    assert "no string type" in diag.explanation
+    assert "char name[]" in diag.fix
+
+
+def test_a_missing_include_names_the_header(tmp_path) -> None:
+    diags = _explained(tmp_path, 'int main(void) {\n    printf("hi\\n");\n    return 0;\n}\n')
+    diag = next(d for d in diags if "printf" in d.message)
+    assert diag.fix == "Add `#include <stdio.h>` at the very top of the file."
+
+
+def test_scanf_without_an_ampersand_names_the_variable(tmp_path) -> None:
+    code = ('#include <stdio.h>\nint main(void) {\n    int total = 0;\n'
+            '    scanf("%d", total);\n    return total;\n}\n')
+    diag = next(d for d in _explained(tmp_path, code) if d.code == "-Wformat")
+    assert diag.fix == "Write `&total` instead of `total`."
+
+
+def test_a_template_with_missing_details_is_not_printed_half_filled() -> None:
+    from nlpcc.diagnostics import Diagnostic, Phase, Severity
+    from nlpcc.explain.rules import explain
+
+    diag = explain(Diagnostic(phase=Phase.SEMANTIC, severity=Severity.ERROR,
+                              message="something undeclared", file="nowhere.c",
+                              code="E_UNDECLARED_IDENTIFIER"))
+    assert "{" not in diag.explanation.replace("{ }", "")
+    assert "{" not in diag.fix.replace("{ }", "")

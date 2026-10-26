@@ -1,97 +1,101 @@
-"""Provider selection: local first, and honest when there is nothing."""
 
 from __future__ import annotations
 
 from nlpcc import models
 
 
-def test_a_configured_key_wins_and_local_is_the_fallback(monkeypatch) -> None:
-    """Order is about quality; the guarantee is that local always works.
-
-    A small local model is far worse at this than a configured hosted one, so
-    when someone has set a key, use it. With no key at all the local providers
-    still answer, which is what keeps the project usable with no account.
-    """
-    ge = models.Provider("gemini", "gemini-3-flash-preview")
+def test_configured_local_api_is_preferred(monkeypatch) -> None:
+    api = models.Provider("openai-compatible", "local-api-model")
     an = models.Provider("anthropic", "claude-opus-5-5")
-    lm = models.Provider("lmstudio", "local-a")
     ol = models.Provider("ollama", "local-b")
 
-    for name, found in (("_gemini", ge), ("_anthropic", an),
-                        ("_lmstudio", lm), ("_ollama", ol)):
+    for name, found in (("_openai_compatible", api), ("_anthropic", an),
+                        ("_ollama", ol)):
         monkeypatch.setattr(models, name, lambda found=found: found)
-    assert models.available() is ge              # all four present
+    assert models.available() is api
 
-    monkeypatch.setattr(models, "_gemini", lambda: None)
+    monkeypatch.setattr(models, "_openai_compatible", lambda: None)
     assert models.available() is an
 
     monkeypatch.setattr(models, "_anthropic", lambda: None)
-    assert models.available() is lm              # falls back to local
-
-    monkeypatch.setattr(models, "_lmstudio", lambda: None)
     assert models.available() is ol
 
-    assert lm.local and ol.local
-    assert not an.local and not ge.local
+    assert api.local and ol.local
+    assert not an.local
 
 
 def test_a_provider_can_be_pinned(monkeypatch) -> None:
-    lm = models.Provider("lmstudio", "local-a")
-    ge = models.Provider("gemini", "gemini-3-flash-preview")
-    monkeypatch.setattr(models, "_lmstudio", lambda: lm)
-    monkeypatch.setattr(models, "_gemini", lambda: ge)
-    assert models.available(prefer="lmstudio") is lm
-    assert models.available(prefer="gemini") is ge
+    api = models.Provider("openai-compatible", "local-a")
+    monkeypatch.setattr(models, "_openai_compatible", lambda: api)
+    assert models.available(prefer="openai-compatible") is api
+    assert models.available(prefer="lmstudio") is api
     assert models.available(prefer="nonsense") is None
 
 
-def test_gemini_needs_a_key(monkeypatch) -> None:
+def test_local_api_probe_uses_bearer_key(monkeypatch) -> None:
     import importlib
 
-    # Reload first: importing the module reads .env, which would put a real
-    # key back into the environment after we cleared it.
-    real = importlib.reload(models)._gemini
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    assert real() is None
+    monkeypatch.setenv("NLPCC_LOCAL_API_KEY", "test-key-not-used")
+    importlib.reload(models)
+    observed = {}
 
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-used")
-    provider = real()
-    assert provider is not None and provider.kind == "gemini"
+    def get_json(url, timeout=models.PROBE_TIMEOUT, headers=None):
+        observed.update(url=url, headers=headers)
+        return {"data": [{"id": "my-model"}]}
+
+    monkeypatch.setattr(models, "_get_json", get_json)
+    provider = models._openai_compatible()
+
+    assert observed["headers"] == {"Authorization": "Bearer test-key-not-used"}
+    assert observed["url"] == f"{models.LOCAL_API_URL}/models"
+    assert provider is not None and provider.model == "my-model"
+
+    def post_json(url, payload, timeout=models.REQUEST_TIMEOUT, headers=None):
+        observed.update(chat_url=url, chat_headers=headers)
+        return {"choices": [{"message": {"content": "answer"}}]}
+
+    monkeypatch.setattr(models, "_post_json", post_json)
+    assert models._local_chat(provider, "system", "prompt") == "answer"
+    assert observed["chat_headers"] == observed["headers"]
+    assert observed["chat_url"] == f"{models.LOCAL_API_URL}/chat/completions"
+
+
+def test_a_local_model_can_be_pinned(monkeypatch) -> None:
+    import importlib
+
+    monkeypatch.setenv("NLPCC_LOCAL_MODEL", "pinned-model")
+    importlib.reload(models)
+    monkeypatch.setattr(models, "_get_json", lambda url, timeout=0, headers=None:
+                        {"data": [{"id": "first"}, {"id": "pinned-model"}]})
+    provider = models._openai_compatible()
+    assert provider is not None and provider.model == "pinned-model"
 
 
 def test_describe_explains_what_to_do_when_there_is_no_model() -> None:
-    """The conftest fixture already simulates having no model installed."""
     message = models.describe()
-    assert "GEMINI_API_KEY" in message or "lms server start" in message
+    assert "NLPCC_LOCAL_URL" in message or "Ollama" in message
 
 
 def test_env_file_does_not_override_the_environment(monkeypatch) -> None:
-    """A key already exported wins over one in .env."""
     import importlib
 
-    monkeypatch.setenv("GEMINI_API_KEY", "from-the-shell")
+    monkeypatch.setenv("NLPCC_LOCAL_API_KEY", "from-the-shell")
     importlib.reload(models)
-    assert models._gemini_key() == "from-the-shell"
+    assert models._local_api_headers() == {
+        "Authorization": "Bearer from-the-shell"}
 
 
 def test_a_keyless_anthropic_client_is_not_a_provider(monkeypatch) -> None:
-    """The SDK defers credential resolution, so a keyless client builds fine.
 
-    Treating that as available picks it over a working local model and then
-    fails every call.
-    """
     import importlib
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-    # The fixture stubs the probes; this test needs the real one.
     real = importlib.reload(models)._anthropic
     assert real() is None
 
 
 def test_json_is_recovered_from_a_messy_reply() -> None:
-    """Small local models wrap the answer in fences, prose and think blocks."""
     assert models._extract_json('```json\n{"a": 1}\n```') == {"a": 1}
     assert models._extract_json("<think>hmm</think> here: {\"a\": 2} ok") == {"a": 2}
     assert models._extract_json('{"a": "brace } inside"}') == {"a": "brace } inside"}
@@ -110,7 +114,7 @@ def test_schema_mismatch_is_treated_as_no_answer() -> None:
     models._local_chat = lambda *a, **k: '{"name": "x", "count": "not a number"}'
     try:
         got = models.complete("sys", "prompt", Shape,
-                              provider=models.Provider("lmstudio", "m"))
+                              provider=models.Provider("openai-compatible", "m"))
     finally:
         models._local_chat = original
     assert got is None

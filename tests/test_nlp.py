@@ -1,17 +1,12 @@
-"""Intent detection: plain English in, the right pipeline stage out.
 
-No model is involved, which is the point -- this has to work on a machine
-with no API key and no local server, instantly, and be able to say why it
-decided what it decided.
-"""
 
 from __future__ import annotations
 
 import pytest
 
 from nlpcc.nlp import detect
-from nlpcc.nlp.intent import (ANALYZE, EXPLAIN, GENERATE, OPTIMIZE, RUN, SCORE,
-                              tokenize, _stem)
+from nlpcc.nlp.intent import (ANALYZE, EDIT, EXPLAIN, GENERATE, OPTIMIZE, QUESTION,
+                              RUN, SCORE, tokenize, _stem)
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -22,9 +17,7 @@ from nlpcc.nlp.intent import (ANALYZE, EXPLAIN, GENERATE, OPTIMIZE, RUN, SCORE,
     ("write me a program that sorts an array", GENERATE),
     ("let ai build my code for a calculator", GENERATE),
     ("generate a program that reads a file", GENERATE),
-    # "give me code" is as plain a request as "write a program", and used to
-    # route correctly at 17% confidence -- only the one-point word "code"
-    # matched, so the page told the user it was guessing.
+
     ("give me correct code", GENERATE),
     ("give code to sum two numbers", GENERATE),
     ("i need code that sorts an array", GENERATE),
@@ -36,6 +29,18 @@ from nlpcc.nlp.intent import (ANALYZE, EXPLAIN, GENERATE, OPTIMIZE, RUN, SCORE,
     ("make this easier to read", OPTIMIZE),
     ("run it and show the output", RUN),
     ("what does it print", RUN),
+    ("what does this code do", QUESTION),
+    ("tell me about this code", QUESTION),
+    ("what is a pointer", QUESTION),
+    ("how do for loops work", QUESTION),
+    ("is this correct?", QUESTION),
+    ("what does printf do", QUESTION),
+    ("fix it", EDIT),
+    ("fix the error", EDIT),
+    ("can you correct my code", EDIT),
+    ("make the code shorter", EDIT),
+    ("convert this to use a while loop", EDIT),
+    ("add comments", EDIT),
 ])
 def test_requests_route_to_the_right_stage(text: str, expected: str) -> None:
     assert detect(text).action == expected
@@ -53,7 +58,7 @@ def test_readability_and_maintainability_are_recognised() -> None:
 
 
 def test_description_drops_the_request_wrapper() -> None:
-    """What gets built is the task, not the sentence asking for it."""
+
     intent = detect("please write me a program that reverses a string")
     assert intent.action == GENERATE
     assert "write" not in intent.description
@@ -61,21 +66,27 @@ def test_description_drops_the_request_wrapper() -> None:
 
 
 def test_an_empty_editor_means_generate() -> None:
-    """With nothing to analyze, a bare description can only be a request to build."""
     intent = detect("a program that adds two numbers", has_code=False)
     assert intent.action == GENERATE
+
+
+def test_a_question_with_an_empty_editor_is_still_a_question() -> None:
+    assert detect("what is a pointer", has_code=False).action == QUESTION
+
+
+def test_fix_it_with_an_empty_editor_does_not_write_a_program() -> None:
+    assert detect("fix it", has_code=False).action == EDIT
 
 
 def test_nonsense_is_admitted_rather_than_guessed() -> None:
     intent = detect("banana banana banana")
     assert intent.confidence == 0.0
     assert not intent.certain
-    assert intent.action == ANALYZE          # a safe default, not a claim
+    assert intent.action == ANALYZE         
     assert intent.because
 
 
 def test_plain_requests_for_code_are_confident() -> None:
-    """A confident route must not be presented to the user as a guess."""
     for text in ("give me correct code",
                  "give code to sum two numbers",
                  "i need code that sorts an array"):
@@ -99,7 +110,7 @@ def test_it_can_say_why() -> None:
 def test_stemming_groups_word_forms() -> None:
     assert _stem("writing") == "writ"
     assert _stem("generated") == "generat"
-    assert _stem("is") == "is"               # too short to strip
+    assert _stem("is") == "is"              
 
 
 def test_tokenizer_drops_punctuation() -> None:
@@ -108,7 +119,6 @@ def test_tokenizer_drops_punctuation() -> None:
 
 
 def test_detection_is_instant_and_offline() -> None:
-    """No network, no model: a thousand detections should be unnoticeable."""
     import time
     start = time.time()
     for _ in range(1000):

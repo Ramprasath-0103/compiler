@@ -1,9 +1,3 @@
-"""The HTTP API behind the React frontend.
-
-It must stay a thin wrapper: the web interface and the terminal have to agree
-about a program's score, which only holds while the server adds no analysis
-of its own.
-"""
 
 from __future__ import annotations
 
@@ -18,7 +12,7 @@ def _code(name: str) -> str:
 
 
 def test_options_describe_what_the_analyzer_supports() -> None:
-    """The UI builds its controls from this, so it cannot offer the unknown."""
+
     data = _options()
     assert data["objectives"] == list(OBJECTIVES)
     assert {d["name"] for d in data["dimensions"]}
@@ -42,7 +36,7 @@ def test_temp_path_never_leaks_to_the_client() -> None:
 
 
 def test_a_program_that_does_not_compile_has_no_score() -> None:
-    """Scoring it on its compile errors alone read as 90 'excellent'."""
+
     result = analyze_source(Options(code="int main(void) { int x = 1 return 0; }",
                                     objectives=OBJECTIVES, run=False, ai=False))
     assert result["compiles"] is False
@@ -74,12 +68,7 @@ def test_defaults_to_every_objective() -> None:
 
 
 def test_report_says_when_runtime_checks_were_off() -> None:
-    """Losing the sanitizer must be visible, not silent.
 
-    Without it, a divide by zero on Apple Silicon is simply not reported --
-    the program runs to completion with a meaningless value. A report that
-    looks identical either way would quietly understate what was checked.
-    """
     import json
 
     from nlpcc.server import Options, analyze_source

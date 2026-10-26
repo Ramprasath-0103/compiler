@@ -1,5 +1,4 @@
-"""Step 7: objective-driven recommendations."""
-
+\
 from __future__ import annotations
 
 import pytest
@@ -13,7 +12,7 @@ def test_nothing_to_recommend_for_clean_code() -> None:
 
 
 def test_the_objective_changes_the_answer() -> None:
-    """The point of the feature: "optimize this" has no single answer."""
+
     case = CORPUS / "quality" / "deep_nesting.c"
     readability = recommend(case, ("readability",))
     speed = recommend(case, ("speed",))
@@ -43,7 +42,7 @@ def test_high_impact_comes_first() -> None:
 
 
 def test_the_score_orders_the_advice() -> None:
-    """Quality scoring feeds optimization: the weakest dimension comes first."""
+
     from nlpcc import pipeline
     from nlpcc.optimize.recommend import OBJECTIVE_DIMENSION
 

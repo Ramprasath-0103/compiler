@@ -1,21 +1,13 @@
 """Where the model comes from.
 
-Four providers, tried in this order:
+The configured OpenAI-compatible local API is tried first, followed by
+Anthropic and Ollama. The local API can be LM Studio or another server that
+implements the OpenAI chat completions API.
 
-  1. Gemini, when GEMINI_API_KEY is set.
-  2. Anthropic, when its credentials resolve.
-  3. LM Studio, or anything else speaking the OpenAI chat API on localhost.
-  4. Ollama, same idea, different port and shape.
-
-The guarantee is that the project *works* with no API key at all -- the local
-providers need no key, no account and no network, and everything outside this
-module (the compiler, the explanations, the five dimensions, the score, the
-suggestions) needs no model whatsoever.
-
-The order is about quality, not availability: a configured hosted model is
-far better at this than a small local one, so when someone has gone to the
-trouble of setting a key, use it. Local is the fallback that always works.
-Pin any of them with NLPCC_PROVIDER.
+The project still works with no API key at all: the local providers need no
+account, and everything outside this module (the compiler, explanations,
+scoring and suggestions) needs no model whatsoever. Pin a provider with
+NLPCC_PROVIDER.
 
 Every provider here is reached with urllib from the standard library, so none
 of this requires an extra Python package.
@@ -57,15 +49,12 @@ def _load_env_file() -> None:
 
 _load_env_file()
 
-LMSTUDIO_URL = os.environ.get("NLPCC_LOCAL_URL", "http://127.0.0.1:1234/v1")
+LOCAL_API_URL = os.environ.get(
+    "NLPCC_LOCAL_URL", "http://127.0.0.1:8317/v1").rstrip("/")
+# Pin the model ID; left empty, the first one the server lists is used.
+LOCAL_MODEL = os.environ.get("NLPCC_LOCAL_MODEL", "")
 OLLAMA_URL = os.environ.get("NLPCC_OLLAMA_URL", "http://127.0.0.1:11434")
 ANTHROPIC_MODEL = "claude-opus-5-5"
-
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-# gemini-2.5-* returns 404 "no longer available to new users" for keys issued
-# now, so the default has to be a current one.
-GEMINI_MODEL = os.environ.get("NLPCC_GEMINI_MODEL", "gemini-3-flash-preview")
-GEMINI_FALLBACK_MODEL = "gemini-flash-lite-latest"
 
 PROBE_TIMEOUT = 1.5
 REQUEST_TIMEOUT = 90.0       # a small local model on CPU is not fast
@@ -81,27 +70,29 @@ T = TypeVar("T")
 
 @dataclass
 class Provider:
-    kind: str           # "lmstudio" | "ollama" | "anthropic"
+    kind: str           # "openai-compatible" | "ollama" | "anthropic"
     model: str
     detail: str = ""
 
     @property
     def local(self) -> bool:
-        return self.kind in ("lmstudio", "ollama")
+        return self.kind in ("openai-compatible", "ollama")
 
     def __str__(self) -> str:
-        where = "local, no API key" if self.local else "hosted"
+        where = "local" if self.local else "hosted"
         return f"{self.model} ({self.kind}, {where})"
 
 
-def _probes():
-    """Every provider finder, in preference order."""
-    return (_gemini, _anthropic, _lmstudio, _ollama)
+def _local_api_headers() -> dict[str, str]:
+    key = os.environ.get("NLPCC_LOCAL_API_KEY", "")
+    return {"Authorization": f"Bearer {key}"} if key else {}
 
 
-def _get_json(url: str, timeout: float = PROBE_TIMEOUT):
+def _get_json(url: str, timeout: float = PROBE_TIMEOUT,
+              headers: dict[str, str] | None = None):
+    request = urllib.request.Request(url, headers=headers or {})
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read())
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return None
@@ -125,13 +116,14 @@ def _post_json(url: str, payload: dict, timeout: float = REQUEST_TIMEOUT,
         return None
 
 
-def _lmstudio() -> Provider | None:
-    data = _get_json(f"{LMSTUDIO_URL}/models")
+def _openai_compatible() -> Provider | None:
+    data = _get_json(f"{LOCAL_API_URL}/models", headers=_local_api_headers())
     models = (data or {}).get("data") or []
     if not models:
         return None
-    return Provider("lmstudio", models[0].get("id", "local-model"),
-                    f"{len(models)} model(s) loaded")
+    model = LOCAL_MODEL or models[0].get("id", "local-model")
+    return Provider("openai-compatible", model,
+                    f"{len(models)} model(s) available")
 
 
 def _ollama() -> Provider | None:
@@ -141,17 +133,6 @@ def _ollama() -> Provider | None:
         return None
     return Provider("ollama", models[0].get("name", "local-model"),
                     f"{len(models)} model(s) available")
-
-
-def _gemini_key() -> str:
-    return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
-
-
-def _gemini() -> Provider | None:
-    key = _gemini_key()
-    if not key:
-        return None
-    return Provider("gemini", GEMINI_MODEL, "GEMINI_API_KEY is set")
 
 
 def _anthropic() -> Provider | None:
@@ -175,28 +156,35 @@ def _anthropic() -> Provider | None:
 def available(prefer: str = "") -> Provider | None:
     """The provider to use, or None when there is no model anywhere.
 
-    ``prefer`` pins one ("lmstudio", "ollama", "anthropic"); NLPCC_PROVIDER
-    does the same from the environment.
+    ``prefer`` pins one ("openai-compatible", "ollama", "anthropic");
+    NLPCC_PROVIDER does the same from the environment.
     """
     prefer = prefer or os.environ.get("NLPCC_PROVIDER", "")
-    finders = {"gemini": _gemini, "anthropic": _anthropic,
-               "lmstudio": _lmstudio, "ollama": _ollama}
+    finders = {"openai-compatible": _openai_compatible,
+               "lmstudio": _openai_compatible,
+               "anthropic": _anthropic, "ollama": _ollama}
     if prefer:
         finder = finders.get(prefer)
         return finder() if finder else None
-    for finder in (_gemini, _anthropic, _lmstudio, _ollama):
+    for finder in (_openai_compatible, _anthropic, _ollama):
         found = finder()
         if found is not None:
             return found
     return None
 
 
+def unreachable(task: str) -> str:
+    """One sentence for when ``task`` needs a model and there is none."""
+    return (f"{task} needs a model, and none is answering at {LOCAL_API_URL} "
+            "right now.")
+
+
 def describe() -> str:
     """One line for the CLI and the web UI."""
     provider = available()
     if provider is None:
-        return ("no model available -- set GEMINI_API_KEY, or start LM Studio's "
-                "local server (`lms server start`), or run Ollama")
+        return ("no model available -- configure an OpenAI-compatible local "
+                "API with NLPCC_LOCAL_URL, or start Ollama")
     return str(provider)
 
 
@@ -232,11 +220,8 @@ def complete_text(system: str, prompt: str, provider: Provider | None = None,
                 reasons.append(f"the API call failed ({exc.__class__.__name__})")
             return ""
 
-    if provider.kind == "gemini":
-        text = _gemini_chat(provider, system, prompt, max_tokens, reasons=reasons)
-    else:
-        text = _local_chat(provider, system, prompt,
-                           max_tokens=min(max_tokens, MAX_TOKENS_LOCAL))
+    text = _local_chat(provider, system, prompt,
+                       max_tokens=min(max_tokens, MAX_TOKENS_LOCAL))
     if not text and reasons is not None and not reasons:
         reasons.append("the model returned nothing")
     return text
@@ -289,80 +274,6 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
-def _gemini_chat(provider: Provider, system: str, prompt: str,
-                 max_tokens: int, json_mode: bool = False,
-                 reasons: list[str] | None = None) -> str:
-    """One Gemini round trip, with its two quirks handled.
-
-    The API answers 503 "experiencing high demand" often enough that a single
-    attempt is not a fair test, and a model that is retired for new keys
-    answers 404 rather than falling back -- so a 404 switches model once.
-    """
-    config: dict = {"maxOutputTokens": max_tokens, "temperature": 0.2}
-    if json_mode:
-        config["responseMimeType"] = "application/json"
-
-    payload = {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": config,
-    }
-    headers = {"x-goog-api-key": _gemini_key()}
-    model = provider.model
-
-    switched = False
-    for attempt in range(4):
-        data = _post_json(f"{GEMINI_URL}/{model}:generateContent", payload,
-                          headers=headers)
-        if data is None:
-            time.sleep(2)
-            continue
-        error = data.get("error")
-        if error:
-            code = error.get("code")
-            if code == 404 and model != GEMINI_FALLBACK_MODEL:
-                model = GEMINI_FALLBACK_MODEL      # this one is retired; try the other
-                continue
-            if code in (503, 429) and attempt < 2:
-                time.sleep(2 + 2 * attempt)        # transient, back off
-                continue
-            # Quota (429) is metered per model and overload (503) is per
-            # model too, so a refusal from one is not a refusal from all of
-            # them. Switching beats failing the user's request.
-            if code in (429, 503) and not switched and model != GEMINI_FALLBACK_MODEL:
-                model, switched = GEMINI_FALLBACK_MODEL, True
-                continue
-            # Say which failure it was. Reporting a quota refusal as "returned
-            # nothing" sends you looking for a bug that is not there.
-            if reasons is not None:
-                if code == 429:
-                    reasons.append("Gemini refused: out of quota for this key "
-                                   "(HTTP 429) -- wait, or use a different provider")
-                else:
-                    reasons.append(f"Gemini refused (HTTP {code}): "
-                                   f"{str(error.get('message', ''))[:120]}")
-            return ""
-        try:
-            parts = data["candidates"][0]["content"]["parts"]
-            text = "".join(part.get("text", "") for part in parts)
-        except (KeyError, IndexError, TypeError):
-            finish = ""
-            try:
-                finish = data["candidates"][0].get("finishReason", "")
-            except (KeyError, IndexError, TypeError):
-                pass
-            if reasons is not None:
-                reasons.append(f"Gemini returned no text"
-                               + (f" (finishReason {finish})" if finish else ""))
-            return ""
-        if not text and reasons is not None:
-            reasons.append("Gemini returned an empty answer")
-        return text
-    if reasons is not None:
-        reasons.append("Gemini did not respond after 3 attempts")
-    return ""
-
-
 def _local_chat(provider: Provider, system: str, prompt: str,
                 max_tokens: int = 4096) -> str:
     """One chat round trip to a local server.
@@ -380,13 +291,13 @@ def _local_chat(provider: Provider, system: str, prompt: str,
         })
         return ((data or {}).get("message") or {}).get("content", "")
 
-    data = _post_json(f"{LMSTUDIO_URL}/chat/completions", {
+    data = _post_json(f"{LOCAL_API_URL}/chat/completions", {
         "model": provider.model,
         "temperature": 0.2,
         "max_tokens": max_tokens,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": prompt}],
-    })
+    }, headers=_local_api_headers())
     choices = (data or {}).get("choices") or []
     if not choices:
         return ""
@@ -395,7 +306,7 @@ def _local_chat(provider: Provider, system: str, prompt: str,
 
 # Small local models produce a malformed reply often enough that one attempt
 # is not a fair test of them -- usually a bad escape inside a string, which
-# json.loads rejects. Hosted models do not need this.
+# json.loads rejects. Anthropic uses its structured-output API instead.
 LOCAL_ATTEMPTS = 3
 
 
@@ -438,7 +349,7 @@ def complete(system: str, prompt: str, schema: Type[T],
             return None
 
     # Everything else gets the schema in the prompt and is validated on the
-    # way back. Gemini is additionally asked for JSON as its response type.
+    # way back.
     try:
         shape = json.dumps(schema.model_json_schema(), indent=None)
     except Exception:                            # noqa: BLE001
@@ -450,9 +361,7 @@ def complete(system: str, prompt: str, schema: Type[T],
         "Escape every newline and quote inside a JSON string correctly.\n"
         f"It must match this JSON schema:\n{shape}"
     )
-    # Keep a local model on a short leash; see MAX_TOKENS_LOCAL.
-    hosted = provider.kind == "gemini"
-    budget = max_tokens if hosted else min(max_tokens, MAX_TOKENS_LOCAL)
+    budget = min(max_tokens, MAX_TOKENS_LOCAL)
     deadline = time.monotonic() + REQUEST_TIMEOUT
 
     for attempt in range(LOCAL_ATTEMPTS):
@@ -460,11 +369,7 @@ def complete(system: str, prompt: str, schema: Type[T],
             note(f"ran out of time after {attempt} attempt(s) "
                  f"({REQUEST_TIMEOUT:.0f}s budget)")
             return None
-        if hosted:
-            raw = _gemini_chat(provider, instructions, prompt, budget,
-                               json_mode=True, reasons=reasons)
-        else:
-            raw = _local_chat(provider, instructions, prompt, max_tokens=budget)
+        raw = _local_chat(provider, instructions, prompt, max_tokens=budget)
         if not raw:
             note("the model server returned nothing")
             continue

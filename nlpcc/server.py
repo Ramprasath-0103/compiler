@@ -167,8 +167,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     raw = payload.get("objectives") or list(OBJECTIVES)
                     wanted = tuple(o for o in raw if o in OBJECTIVES) or OBJECTIVES
-                    self._send(200,
-                               improve_module.improve(code, wanted).to_dict())
+                    self._send(200, improve_module.improve(
+                        code, wanted, run=bool(payload.get("run")),
+                        ai=bool(payload.get("ai"))).to_dict())
             except Exception as exc:             # noqa: BLE001
                 self._send(500, {"error": f"{exc.__class__.__name__}: {exc}"})
             return

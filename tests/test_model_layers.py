@@ -1,9 +1,3 @@
-"""Steps 5b and 9: the model-backed layers.
-
-These tests never reach the network. What matters about these two layers is
-that they are optional -- the pipeline must behave identically when there is
-no API key, no package, or no connection -- so that is what is tested here.
-"""
 
 from __future__ import annotations
 
@@ -21,17 +15,15 @@ def _unexplained() -> Diagnostic:
                       file="x.c", position=Position(3, 1), code="clang:novel_thing")
 
 
-# --- step 5b -----------------------------------------------------------------
 def test_offline_mode_leaves_diagnostics_untouched() -> None:
     diag = _unexplained()
     outcome = llm.explain_unmatched([diag], allow_network=False)
     assert not outcome.available
     assert outcome.attempted == 1
-    assert diag.explanation == ""        # unchanged, not invented
+    assert diag.explanation == ""      
 
 
 def test_rule_explained_findings_are_never_sent_to_the_model() -> None:
-    """The deterministic layer comes first; the model only sees the remainder."""
     analysis = pipeline.analyze(CORPUS / "syntax" / "missing_semicolon.c")
     outcome = llm.explain_unmatched(analysis.diagnostics, allow_network=False)
     assert outcome.attempted == 0
@@ -46,11 +38,10 @@ def test_cache_round_trip(tmp_path) -> None:
     assert outcome.explained == 1 and outcome.from_cache == 1
     assert diag.explanation == "The long explanation."
     assert diag.meta["explained_by"] == "llm-cache"
-    assert diag.meta["generated"] is True        # the report must label it
+    assert diag.meta["generated"] is True       
 
 
 def test_cache_key_ignores_program_specific_names() -> None:
-    """`undeclared identifier 'totl'` and `'xyz'` are the same problem."""
     a = Diagnostic(phase=Phase.SEMANTIC, severity=Severity.ERROR,
                    code="clang:undeclared", message="use of undeclared identifier 'totl'")
     b = Diagnostic(phase=Phase.SEMANTIC, severity=Severity.ERROR,
@@ -65,7 +56,6 @@ def test_model_output_is_labelled_as_generated() -> None:
     assert diag.meta["generated"] is True
 
 
-# --- step 9 ------------------------------------------------------------------
 def test_markdown_fences_are_stripped() -> None:
     assert generate._strip_fence("```c\nint main(void){return 0;}\n```") == \
         "int main(void){return 0;}"
@@ -74,10 +64,7 @@ def test_markdown_fences_are_stripped() -> None:
 
 
 def test_generation_without_a_model_fails_honestly() -> None:
-    """It must not return code it never validated, or claim success.
 
-    The conftest fixture simulates a machine with no model available.
-    """
     import nlpcc.generate as module
 
     result = module.generate("a program that prints hello")
@@ -89,7 +76,6 @@ def test_generation_without_a_model_fails_honestly() -> None:
 
 
 def test_rejected_program_is_not_presented_as_working() -> None:
-    """An attempt the compiler rejects is returned unaccepted."""
     from nlpcc.diagnostics import Origin
 
     attempt = generate.Attempt(
@@ -101,11 +87,7 @@ def test_rejected_program_is_not_presented_as_working() -> None:
 
 
 def test_generated_code_is_judged_by_the_compiler_not_our_subset() -> None:
-    """Our front end models a subset, so its errors are not build failures.
 
-    Judging generated code by the subset rejected correct programs for using
-    size_t -- valid C that clang compiles without a word.
-    """
     from nlpcc.diagnostics import Origin
 
     attempt = generate.Attempt(
@@ -116,14 +98,8 @@ def test_generated_code_is_judged_by_the_compiler_not_our_subset() -> None:
     assert attempt.errors == []
 
 
-# --- recovering a program from a model's reply --------------------------------
 def test_code_is_recovered_from_whatever_wraps_it() -> None:
-    """Models wrap code in fences, prose and think blocks, however asked not to.
 
-    Generation asks for raw C rather than JSON-wrapped C on purpose: escaping
-    a program into a JSON string defeated a small local model every time, and
-    every failure was the escaping, not the C.
-    """
     expected = "#include <stdio.h>\nint main(void) { return 0; }"
 
     assert generate._clean(expected) == expected
@@ -135,9 +111,38 @@ def test_code_is_recovered_from_whatever_wraps_it() -> None:
 
 
 def test_failures_say_which_failure_it_was() -> None:
-    """'No code' is indistinguishable from slow, unreachable, or malformed."""
     from nlpcc import models
 
     reasons: list[str] = []
     models.complete_text("sys", "prompt", reasons=reasons)
     assert reasons == ["no model available"]
+
+
+def test_the_same_program_gets_the_same_ai_review(monkeypatch, tmp_path) -> None:
+
+    from nlpcc import models
+    from nlpcc.quality import ai
+
+    monkeypatch.setattr(ai, "_REVIEWS", {})
+    monkeypatch.setattr(models, "available",
+                        lambda prefer=None: models.Provider("openai-compatible", "fake"))
+    calls = []
+
+    def complete(system, prompt, schema, **kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return None          
+        finding = {"dimension": "security", "line": 1, "title": "t",
+                   "explanation": "e", "fix": "f", "penalty": 9}
+        return schema.model_validate({"findings": [finding]})
+
+    monkeypatch.setattr(models, "complete", complete)
+    code = "int main(void) { return 0; }\n"
+    first, second, third = (tmp_path / n for n in ("a.c", "b.c", "c.c"))
+    for path in (first, second, third):
+        path.write_text(code)
+
+    assert ai.analyze(first) == []
+    assert len(ai.analyze(second)) == 1
+    assert [d.file for d in ai.analyze(third)] == [str(third)]
+    assert len(calls) == 2

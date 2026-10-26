@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import generate, models, pipeline
-from .diagnostics import Diagnostic, Origin, Severity
+from .diagnostics import Diagnostic, Origin, Phase, Severity
 from .optimize import OBJECTIVES
 
 SYSTEM_PROMPT = """You improve small C programs.
@@ -48,10 +48,15 @@ class Improvement:
     before: dict[str, Any] = field(default_factory=dict)
     after: dict[str, Any] = field(default_factory=dict)
     objectives: tuple[str, ...] = OBJECTIVES
+    instruction: str = ""         # what the user asked for, for an edit
 
     @property
     def score_change(self) -> int:
-        return int(self.after.get("overall", 0)) - int(self.before.get("overall", 0))
+        # No score on a side that did not compile: nothing to compare.
+        after, before = self.after.get("overall"), self.before.get("overall")
+        if after is None or before is None:
+            return 0
+        return int(after) - int(before)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +71,7 @@ class Improvement:
             "after": self.after,
             "score_change": self.score_change,
             "objectives": list(self.objectives),
+            "instruction": self.instruction,
         }
 
 
@@ -98,7 +104,25 @@ def _snapshot(analysis) -> dict[str, Any]:
         "compiles": not [d for d in analysis.diagnostics
                          if d.severity in (Severity.ERROR, Severity.FATAL)
                          and d.origin in (Origin.CLANG, Origin.FRONTEND)],
+        "runtime_errors": sorted({d.code for d in analysis.diagnostics
+                                  if d.phase is Phase.RUNTIME
+                                  and d.severity in (Severity.ERROR, Severity.FATAL)}),
     }
+
+
+def _ending_like(original: str, rewrite: str) -> str:
+    """The rewrite with the original's final newline, or lack of one.
+
+    The model's reply is stripped, so without this every diff ended in a
+    "-}" / "+}" pair that changed nothing but the newline after it.
+    """
+    rewrite = rewrite.rstrip("\n")
+    return rewrite + "\n" if original.endswith("\n") else rewrite
+
+
+def _same_program(a: str, b: str) -> bool:
+    """True when two sources differ in whitespace at most."""
+    return a.split() == b.split()
 
 
 def _problem_list(analysis) -> str:
@@ -114,14 +138,22 @@ def _problem_list(analysis) -> str:
     return "\n".join(lines) or "- no specific findings; improve it where you can"
 
 
-def improve(code: str, objectives: tuple[str, ...] = OBJECTIVES) -> Improvement:
-    """Ask for a better version of ``code`` and verify that it is better."""
+def improve(code: str, objectives: tuple[str, ...] = OBJECTIVES,
+            run: bool = False, ai: bool = False) -> Improvement:
+    """Ask for a better version of ``code`` and verify that it is better.
+
+    ``run`` and ``ai`` must match the report the user is looking at. Both
+    sides of the comparison are analyzed the same way, and that way has to be
+    the report's: improving with neither on scored a program 100 here while
+    its report, with runtime and AI findings counted, said 91 -- and the
+    model was never told about the findings that cost those nine points.
+    """
     result = Improvement(original=code, objectives=objectives)
 
     with tempfile.TemporaryDirectory(prefix="nlpcc-improve-") as tmp:
         before_path = Path(tmp) / "before.c"
         before_path.write_text(code)
-        before = pipeline.analyze(before_path, quality=True)
+        before = pipeline.analyze(before_path, run=run, quality=True, ai=ai)
         result.before = _snapshot(before)
 
         # Checked before looking for a model: there is no point spending a
@@ -146,15 +178,20 @@ def improve(code: str, objectives: tuple[str, ...] = OBJECTIVES) -> Improvement:
         reasons: list[str] = []
         reply = models.complete_text(SYSTEM_PROMPT, prompt, provider=provider,
                                      max_tokens=4096, reasons=reasons)
-        improved = generate._clean(reply)
+        improved = _ending_like(code, generate._clean(reply))
         if not improved.strip():
             result.reason = ("the model returned no code: "
                              + ("; ".join(reasons) or "no reply"))
             return result
+        if _same_program(code, improved):
+            # Otherwise an echo of the input scores equal and is "accepted".
+            result.improved = improved
+            result.reason = "the model returned the program unchanged"
+            return result
 
         after_path = Path(tmp) / "after.c"
         after_path.write_text(improved)
-        after = pipeline.analyze(after_path, quality=True)
+        after = pipeline.analyze(after_path, run=run, quality=True, ai=ai)
         result.improved = improved
         result.after = _snapshot(after)
 
@@ -168,6 +205,17 @@ def improve(code: str, objectives: tuple[str, ...] = OBJECTIVES) -> Improvement:
                              "as an improvement")
             return result
 
+        new_failures = sorted(set(result.after["runtime_errors"])
+                              - set(result.before["runtime_errors"]))
+        if new_failures:
+            # A crash costs one dimension, which AI findings elsewhere can
+            # outweigh -- but a rewrite that crashes where the original did not
+            # has changed what the program does, whatever it scores.
+            result.reason = ("the rewrite fails at run time where the original "
+                             f"did not ({', '.join(new_failures)}), so it is not "
+                             "offered as an improvement")
+            return result
+
         before_score = result.before.get("overall") or 0
         after_score = result.after.get("overall") or 0
         if after_score < before_score:
@@ -177,8 +225,117 @@ def improve(code: str, objectives: tuple[str, ...] = OBJECTIVES) -> Improvement:
 
         result.accepted = True
         if after_score == before_score:
-            result.reason = (f"the score is unchanged at {after_score}; the rewrite "
-                             "addresses the findings without moving it")
+            fewer = result.before["findings"] - result.after["findings"]
+            if fewer > 0:
+                result.reason = (f"the score is unchanged at {after_score}, with "
+                                 f"{fewer} finding{'s' if fewer != 1 else ''} fewer")
+            else:
+                result.reason = (f"the score is unchanged at {after_score} and no "
+                                 "findings were removed")
         else:
             result.reason = f"score {before_score} to {after_score}"
         return result
+
+
+EDIT_PROMPT = """You change a C program exactly the way the user asks.
+
+Rules:
+- Do what they asked and nothing else. Leave every other line as it was.
+- If they ask you to fix it, fix the problems listed, and only those.
+- Keep what the program does, unless the request is to change that.
+- C99, compiles clean under -Wall -Wextra.
+
+Reply with the complete C source and nothing else: no explanation before or
+after it, no markdown fence. Your whole reply must be the contents of a .c file."""
+
+
+def edit(code: str, instruction: str) -> Improvement:
+    """Change ``code`` as ``instruction`` says, and check the result compiles.
+
+    Unlike improve() this takes code that does not compile -- "fix the error"
+    is the commonest thing anyone types -- and it does not insist the score
+    goes up: "add comments" or "use a while loop" is the user's call, not a
+    quality contest. What it does insist on is that the result builds, that
+    something actually changed, and that it does not crash where the original
+    did not. Both sides are run: "fix the error" on a program that compiles
+    but reads past the end of an array is about the run-time error, and
+    without running it the model was never told there was one.
+    """
+    result = Improvement(original=code, objectives=(), instruction=instruction)
+
+    with tempfile.TemporaryDirectory(prefix="nlpcc-edit-") as tmp:
+        before = pipeline.analyze(_write(tmp, "before.c", code), run=True, quality=True)
+        result.before = _snapshot(before)
+
+        provider = models.available()
+        if provider is None:
+            result.reason = models.unreachable("Changing your code")
+            return result
+        result.provider = str(provider)
+
+        prompt = (f"What to change: {instruction}\n\nThe program:\n\n{code}\n\n"
+                  f"Problems found in it:\n\n{_problem_list(before)}\n")
+        for attempt in range(2):
+            reasons: list[str] = []
+            improved = _ending_like(code, generate._clean(models.complete_text(
+                EDIT_PROMPT, prompt, provider=provider, max_tokens=4096,
+                reasons=reasons)))
+            if not improved.strip():
+                result.reason = ("the model returned no code: "
+                                 + ("; ".join(reasons) or "no reply"))
+                return result
+            if _same_program(code, improved):
+                result.improved = improved
+                result.reason = "the model returned the program unchanged"
+                return result
+
+            after = pipeline.analyze(_write(tmp, "after.c", improved), run=True,
+                                     quality=True)
+            result.improved = improved
+            result.after = _snapshot(after)
+            if result.after["compiles"]:
+                break
+            # One more try, handed the compiler's own words.
+            errors = "\n".join(f"- {line}" for line in _problem_list(after).splitlines()
+                               if line.strip())
+            prompt = (f"What to change: {instruction}\n\nThe original program:\n\n"
+                      f"{code}\n\nYour version does not compile:\n\n{improved}\n\n"
+                      f"The compiler said:\n{errors}\n\nReturn the corrected program.")
+
+        result.diff = "".join(difflib.unified_diff(
+            code.splitlines(keepends=True), result.improved.splitlines(keepends=True),
+            fromfile="before.c", tofile="after.c", n=3))
+
+        if not result.after["compiles"]:
+            result.reason = ("the changed program does not compile, so it is not "
+                             "offered as a replacement")
+            return result
+
+        new_failures = sorted(set(result.after["runtime_errors"])
+                              - set(result.before["runtime_errors"]))
+        if new_failures:
+            result.reason = ("the changed program fails at run time where yours did "
+                             f"not ({', '.join(new_failures)}), so it is not offered "
+                             "as a replacement")
+            return result
+
+        result.accepted = True
+        fixed = result.before["findings"] - result.after["findings"]
+        parts = ["done, and it compiles"]
+        if not result.before["compiles"]:
+            parts = ["done -- it compiles now"]
+        if result.before["runtime_errors"] and not result.after["runtime_errors"]:
+            parts.append("it no longer fails when run")
+        if fixed > 0:
+            parts.append(f"{fixed} problem{'s' if fixed != 1 else ''} fewer")
+        if result.before.get("overall") is not None and result.after.get("overall") is not None \
+                and result.after["overall"] != result.before["overall"]:
+            parts.append(f"score {result.before['overall']} to {result.after['overall']}")
+        result.reason = "; ".join(parts)
+        return result
+
+
+def _write(directory: str, name: str, code: str) -> Path:
+    path = Path(directory) / name
+    path.write_text(code)
+    return path

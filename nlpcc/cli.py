@@ -54,8 +54,8 @@ def _render(result: pipeline.Analysis, color: bool, verbose: bool) -> None:
             if related.get("snippet"):
                 print(f"      {related['snippet'].strip()}")
         if diag.explanation:
-            print(f"\n  What it means: {diag.explanation}")
-            print(f"  How to fix it: {diag.fix}")
+            print(f"\n  What happened: {diag.explanation}")
+            print(f"  Fix: {diag.fix}")
         else:
             print(f"  Compiler said: {diag.message}")
             print("  (no explanation rule for this yet -- see nlpcc/explain/rules.py)")
@@ -228,10 +228,25 @@ def main(argv: list[str] | None = None) -> int:
               f"  (confidence {intent['confidence']:.0%})")
         if intent["objectives"]:
             print(f"  Optimizing for: {', '.join(intent['objectives'])}")
-        if intent["because"]:
-            print(f"  Matched: {', '.join(intent['because'])}")
         if intent["confidence"] < 0.5:
-            print("  Not sure what you meant -- analyzing everything instead.")
+            print("  Not sure what you meant -- rephrase if that is not it.")
+
+        if "answer" in result:
+            answer = result["answer"]
+            if answer["text"]:
+                print(f"\n{answer['text']}\n")
+                return 0
+            print(f"\n  {answer['error']}")
+            if "report" not in result:
+                return 1
+
+        if "edit" in result:
+            changed = result["edit"]
+            print(f"\n  {'Changed' if changed['accepted'] else 'Not changed'}: "
+                  f"{changed['reason']}\n")
+            if changed["diff"]:
+                print(changed["diff"])
+            return 0 if changed["accepted"] else 1
 
         if "error" in result:
             print(f"\n  {result['error']}\n")
@@ -256,8 +271,8 @@ def main(argv: list[str] | None = None) -> int:
             title = (diag["meta"] or {}).get("title") or diag["message"]
             print(f"\n  {diag['severity'].upper()}  {where}\n  {title}")
             if diag["explanation"]:
-                print(f"\n  What it means: {diag['explanation']}")
-                print(f"  How to fix it: {diag['fix']}")
+                print(f"\n  What happened: {diag['explanation']}")
+                print(f"  Fix: {diag['fix']}")
         if report["score"]:
             print(f"\n  Quality score: {report['score']['overall']}/100 "
                   f"({report['score']['grade']})")

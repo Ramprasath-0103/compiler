@@ -22,6 +22,13 @@ from .rules import MAINTAINABILITY, PERFORMANCE, PRACTICES, READABILITY, SECURIT
 DIMENSIONS = (SECURITY, READABILITY, MAINTAINABILITY, PERFORMANCE, PRACTICES)
 MAX_FINDINGS = 8
 
+# One review per program text and model, for the life of the process. A model
+# reviewing the same code twice does not report the same findings twice, so
+# without this the report said 91 and the improve view, analyzing the very
+# same program a moment later, started from a different number.
+_REVIEWS: dict[tuple[str, str, str], list] = {}
+MAX_CACHED_REVIEWS = 64
+
 SYSTEM_PROMPT = f"""You review C code across exactly five dimensions: \
 {', '.join(DIMENSIONS)}.
 
@@ -59,16 +66,24 @@ def analyze(source: Path) -> list[Diagnostic]:
     except OSError:
         return []
 
-    numbered = "\n".join(f"{i:4d}  {line}"
-                         for i, line in enumerate(code.splitlines(), 1))
-    parsed = models.complete(SYSTEM_PROMPT, f"Review this C program:\n\n{numbered}",
-                             Review, provider=provider)
-    if parsed is None:
-        return []
+    key = (provider.kind, provider.model, code)
+    findings = _REVIEWS.get(key)
+    if findings is None:
+        numbered = "\n".join(f"{i:4d}  {line}"
+                             for i, line in enumerate(code.splitlines(), 1))
+        parsed = models.complete(SYSTEM_PROMPT,
+                                 f"Review this C program:\n\n{numbered}",
+                                 Review, provider=provider)
+        if parsed is None:
+            return []           # not cached: the next call may get a reply
+        findings = parsed.findings
+        if len(_REVIEWS) >= MAX_CACHED_REVIEWS:
+            _REVIEWS.pop(next(iter(_REVIEWS)))
+        _REVIEWS[key] = findings
 
     lines = code.splitlines()
     out: list[Diagnostic] = []
-    for finding in parsed.findings[:MAX_FINDINGS]:
+    for finding in findings[:MAX_FINDINGS]:
         if finding.dimension not in DIMENSIONS:
             continue
         line = max(0, min(finding.line, len(lines)))

@@ -587,3 +587,18 @@ pre.diff { max-height: 520px; overflow: auto; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .where { margin-left: 0; width: 100%; }
 }
+
+/* -- answers to plain-English questions -------------------------------- */
+.answer p { font-size: 16px; line-height: 1.6; margin: 0 0 12px; }
+.answer code,
+.finding p code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--line);
+}
+.answer .small { font-size: 13px; }
+.answer ul,
+.answer ol { margin: 0 0 12px; padding-left: 22px; font-size: 16px; line-height: 1.6; }
+.answer li { margin-bottom: 4px; }
